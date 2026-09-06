@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 在线更新：检查 GitHub Releases + 下载 APK -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -19,7 +20,7 @@
 
     <application
         android:label="QQ音乐语音注入"
-        android:icon="@android:drawable/ic_menu_play_clip">
+        android:icon="@android:drawable/ic_media_play">
 
         <!-- 模块主界面：查看日志 / 检查更新 / 下载安装 -->
         <activity
