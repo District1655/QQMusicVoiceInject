@@ -1,0 +1,65 @@
+name: Build APK and Publish Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant execute permission for gradlew (if present)
+        run: chmod +x gradlew 2>/dev/null || true
+
+      - name: Build debug APK
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          if [ -x ./gradlew ]; then ./gradlew :app:assembleDebug --no-daemon; else gradle :app:assembleDebug --no-daemon; fi
+
+      - name: Extract version from build.gradle
+        id: version
+        run: |
+          VER=$(grep -oP "versionName \"\K[^\"]+" app/build.gradle)
+          echo "VERSION=$VER" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## QQ音乐语音注入 v${{ steps.version.outputs.VERSION }}
+
+            - 自动构建产物：app-debug.apk（LSPosed 模块，debug 签名即可安装）
+            - 支持：QQ音乐车机版 / QQ音乐 / 网易云音乐车机版 / 网易云音乐
+            - 功能：MediaSession 语音控制（播放/暂停/切歌/点歌）、运行日志、在线更新
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: false

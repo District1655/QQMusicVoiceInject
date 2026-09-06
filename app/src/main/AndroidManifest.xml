@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 在线更新：检查 GitHub Releases + 下载 APK -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 安装更新 APK -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 读取 /sdcard 运行日志（Android 10 及以下）；11+ 由主界面引导授权 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <!-- Android 11+ 读取公共目录日志的授权（MANAGE_EXTERNAL_STORAGE） -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <application
+        android:label="QQ音乐语音注入"
+        android:icon="@android:drawable/ic_menu_play_clip">
+
+        <!-- 模块主界面：查看日志 / 检查更新 / 下载安装 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- LSPosed 模块声明 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="为方易通车助理(com.syu.voice)注入QQ音乐/网易云车机版支持，含日志与在线更新" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:value="com.syu.voice" />
+    </application>
+
+</manifest>

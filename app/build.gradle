@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.syu.voice.hook'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.syu.voice.hook"
+        minSdk 21
+        targetSdk 33
+        // 版本号规则：1.1.0 -> 10100（主*10000 + 次*100 + 补丁），与 GitHub Release tag vX.Y.Z 对应
+        versionCode 10100
+        versionName "1.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    // Xposed API：仅编译期引用，不会打包进 APK
+    compileOnly 'de.robv.android.xposed:api:82'
+}
