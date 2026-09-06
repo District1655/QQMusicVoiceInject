@@ -24,13 +24,16 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Grant execute permission for gradlew (if present)
-        run: chmod +x gradlew 2>/dev/null || true
+      - name: Set up Gradle 8.5
+        run: |
+          curl -fL --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          sudo unzip -q /tmp/gradle.zip -d /opt
+          /opt/gradle-8.5/bin/gradle --version
 
       - name: Build debug APK
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          if [ -x ./gradlew ]; then ./gradlew :app:assembleDebug --no-daemon --stacktrace; else gradle :app:assembleDebug --no-daemon --stacktrace; fi
+          /opt/gradle-8.5/bin/gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Extract version from build.gradle
         id: version
