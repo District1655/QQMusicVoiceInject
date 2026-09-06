@@ -30,7 +30,7 @@ jobs:
       - name: Build debug APK
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          if [ -x ./gradlew ]; then ./gradlew :app:assembleDebug --no-daemon; else gradle :app:assembleDebug --no-daemon; fi
+          if [ -x ./gradlew ]; then ./gradlew :app:assembleDebug --no-daemon --stacktrace; else gradle :app:assembleDebug --no-daemon --stacktrace; fi
 
       - name: Extract version from build.gradle
         id: version
