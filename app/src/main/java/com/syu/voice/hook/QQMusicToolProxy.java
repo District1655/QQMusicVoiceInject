@@ -272,14 +272,9 @@ public final class QQMusicToolProxy {
         }
 
         private Context context() {
-            try {
-                Object app = XposedHelpers.callStaticMethod(
-                        XposedHelpers.findClass("android.app.ActivityThread", mCl),
-                        "currentApplication");
-                return (app instanceof Context) ? (Context) app : null;
-            } catch (Throwable t) {
-                return null;
-            }
+            // 从 ContextHolder 取 Application Context（MainHook 在 Application.onCreate 时设置）
+            // 不使用 ActivityThread.currentApplication() 反射，避免隐藏 API 反射失败导致 Context 为 null
+            return ContextHolder.get();
         }
 
         // 状态上报（可选增强）：播放状态变化时通知宿主刷新 UI

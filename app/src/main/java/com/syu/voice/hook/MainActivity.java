@@ -156,21 +156,44 @@ public class MainActivity extends Activity {
 
     /** 仅在用户点击"查看日志"且无权限时弹出，不再打开 App 就弹 */
     private void showStoragePermissionDialog() {
-        new AlertDialog.Builder(this)
-                .setTitle("需要存储权限")
-                .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页打开“允许访问所有文件”后返回。\n（注入功能本身不依赖该权限）")
-                .setPositiveButton("去授权", (d, w) -> {
-                    try {
-                        Intent intent = new Intent(
-                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                        intent.setData(android.net.Uri.parse("package:" + getPackageName()));
-                        startActivity(intent);
-                    } catch (Throwable t) {
-                        startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        if (Build.VERSION.SDK_INT >= 30) {
+            // Android 11+：跳"所有文件访问"设置页
+            new AlertDialog.Builder(this)
+                    .setTitle("需要存储权限")
+                    .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页打开“允许访问所有文件”后返回。\n（注入功能本身不依赖该权限）")
+                    .setPositiveButton("去授权", (d, w) -> {
+                        try {
+                            Intent intent = new Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        } catch (Throwable t1) {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                            } catch (Throwable t2) {
+                                Toast.makeText(this, "车机系统不支持所有文件访问设置，请手动在系统设置中授权存储权限",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        } else {
+            // Android 10 及以下：直接申请运行时权限，不跳设置页（避免车机无对应设置页导致闪退）
+            requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE}, 1001);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1001) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                loadLog();
+            } else {
+                Toast.makeText(this, "存储权限被拒绝，无法查看日志", Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     // ------------------------------------------------------------------
