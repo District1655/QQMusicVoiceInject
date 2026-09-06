@@ -11,8 +11,8 @@ android {
         minSdk 21
         targetSdk 33
         // 版本号规则：1.1.0 -> 10100（主*10000 + 次*100 + 补丁），与 GitHub Release tag vX.Y.Z 对应
-        versionCode 10100
-        versionName "1.1.0"
+        versionCode 10101
+        versionName "1.1.1"
     }
 
     buildTypes {

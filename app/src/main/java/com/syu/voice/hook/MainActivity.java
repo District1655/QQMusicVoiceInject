@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -36,7 +37,6 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         buildUi();
-        ensureAllFilesPermission();
     }
 
     private void buildUi() {
@@ -90,7 +90,11 @@ public class MainActivity extends Activity {
         logBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                loadLog();
+                if (!hasStoragePermission()) {
+                    showStoragePermissionDialog();
+                } else {
+                    loadLog();
+                }
             }
         });
         root.addView(logBtn);
@@ -132,28 +136,32 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    /** Android 11+ 读取 /sdcard 日志需要授权（一次性） */
-    private void ensureAllFilesPermission() {
+    /** 检查是否有读取 /sdcard 日志的权限（Android 11+ 用 isExternalStorageManager，10 及以下用运行时权限） */
+    private boolean hasStoragePermission() {
         if (Build.VERSION.SDK_INT >= 30) {
-            File logDir = new File(Environment.getExternalStorageDirectory(), "fytMusicVoiceInject/logs");
-            if (!logDir.canRead()) {
-                new AlertDialog.Builder(this)
-                        .setTitle("需要存储权限")
-                        .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页点击“允许”后返回。\n（注入功能本身不依赖该权限）")
-                        .setPositiveButton("去授权", (d, w) -> {
-                            try {
-                                Intent intent = new Intent(
-                                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                                intent.setData(android.net.Uri.parse("package:" + getPackageName()));
-                                startActivity(intent);
-                            } catch (Throwable t) {
-                                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-                            }
-                        })
-                        .setNegativeButton("取消", null)
-                        .show();
-            }
+            return Environment.isExternalStorageManager();
         }
+        return checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** 仅在用户点击"查看日志"且无权限时弹出，不再打开 App 就弹 */
+    private void showStoragePermissionDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("需要存储权限")
+                .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页打开“允许访问所有文件”后返回。\n（注入功能本身不依赖该权限）")
+                .setPositiveButton("去授权", (d, w) -> {
+                    try {
+                        Intent intent = new Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                        intent.setData(android.net.Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Throwable t) {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     // ------------------------------------------------------------------
