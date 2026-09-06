@@ -30,6 +30,14 @@ jobs:
           sudo unzip -q /tmp/gradle.zip -d /opt
           /opt/gradle-8.5/bin/gradle --version
 
+      - name: Set up fixed debug keystore (签名一致，避免覆盖安装时报签名不一致)
+        run: |
+          mkdir -p ~/.android
+          echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+          ls -la ~/.android/debug.keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+
       - name: Build debug APK
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
