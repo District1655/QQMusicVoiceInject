@@ -31,9 +31,10 @@ public final class MusicToolInject {
     /** 需要支持的播放器包名（可自行增删；需该播放器实现 MediaSession） */
     public static final String[] TARGET_MUSIC_PKGS = {
             "com.tencent.qqmusiccar",        // QQ音乐车机版（导航/车机市场版本）
-            "com.tencent.qqmusic",           // QQ音乐（手机版/HD 通用包名）
+            "com.tencent.qqmusic",           // QQ音乐手机版
+            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad 版
             "com.netease.cloudmusic.iot",    // 网易云音乐车机版（IoT 开放平台版）
-            "com.netease.cloudmusic",        // 网易云音乐（手机版）
+            "com.netease.cloudmusic",        // 网易云音乐手机版
     };
 
     private static final String NAVI_TOOLS = "com.syu.voice.VoiceAdapter$NaviTools";
