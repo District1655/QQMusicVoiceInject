@@ -1,4 +1,4 @@
-package com.syu.voice.hook;
+﻿package com.syu.voice.hook;
 
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
@@ -30,7 +30,7 @@ public final class UpdateManager {
     public static final String TAG = MainHook.TAG;
 
     /** GitHub 仓库（owner/repo） */
-    public static final String REPO = "District1655/QQMusicVoiceInject";
+    public static final String REPO = "District1655/fytMusicVoiceInject";
     private static final String RELEASES_API = "https://api.github.com/repos/" + REPO + "/releases/latest";
 
     /** 最新 Release 信息 */
@@ -211,3 +211,4 @@ public final class UpdateManager {
         return -1;
     }
 }
+

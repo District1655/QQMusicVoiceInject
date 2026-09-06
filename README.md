@@ -57,7 +57,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
   - 日志文件：`/sdcard/QQMusicVoiceInject/logs/QQMusicVoiceInject.log`（1MB 自动轮转，保留 3 份）
   - 查看方式：打开模块 App →「查看运行日志」；或 adb：`adb logcat -s QQMusicVoice`
 - **在线更新**：模块 App →「检查更新」→「下载并安装」
-  - 数据源：`https://api.github.com/repos/District1655/QQMusicVoiceInject/releases/latest`
+  - 数据源：`https://api.github.com/repos/District1655/fytMusicVoiceInject/releases/latest`
   - 版本规则：tag `vX.Y.Z` ↔ versionCode `主*10000+次*100+补丁`
 - **网易云车机版**：加入白名单，MediaSession 控制
 
@@ -115,4 +115,5 @@ QQMusicVoiceInject/
 - 本模块仅作技术学习与自有设备功能增强，请勿用于商业分发或绕过版权保护；
 - 修改系统应用（com.syu.voice 为 system uid）存在刷机风险，操作前请备份；
 - 语音点歌依赖播放器的在线搜索服务，受其会员/版权策略影响。
+
 
