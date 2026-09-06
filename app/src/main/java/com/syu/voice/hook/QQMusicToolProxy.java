@@ -1,6 +1,5 @@
 package com.syu.voice.hook;
 
-import android.app.ActivityThread;
 import android.content.Context;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
@@ -260,7 +259,7 @@ public final class QQMusicToolProxy {
                     XposedHelpers.callMethod(model, "setTitle", title);
                 }
                 if (artist != null) {
-                    XposedHelpers.callMethod(model, "setArtist", new String[]{artist});
+                    XposedHelpers.callMethod(model, "setArtist", (Object) new String[]{artist});
                 }
                 if (album != null) {
                     XposedHelpers.callMethod(model, "setAlbum", album);
@@ -274,7 +273,10 @@ public final class QQMusicToolProxy {
 
         private Context context() {
             try {
-                return (Context) XposedHelpers.callStaticMethod(ActivityThread.class, "currentApplication");
+                Object app = XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("android.app.ActivityThread", mCl),
+                        "currentApplication");
+                return (app instanceof Context) ? (Context) app : null;
             } catch (Throwable t) {
                 return null;
             }

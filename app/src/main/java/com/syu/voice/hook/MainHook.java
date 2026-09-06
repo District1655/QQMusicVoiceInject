@@ -1,9 +1,9 @@
 package com.syu.voice.hook;
 
-import android.app.ActivityThread;
 import android.content.Context;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
@@ -22,9 +22,11 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         // 初始化文件日志（Logcat + /sdcard/QQMusicVoiceInject/logs/）
         try {
-            Context app = (Context) ActivityThread.currentApplication();
-            if (app != null) {
-                LogManager.init(app);
+            Object app = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
+                    "currentApplication");
+            if (app instanceof Context) {
+                LogManager.init((Context) app);
             }
         } catch (Throwable ignored) {
         }
