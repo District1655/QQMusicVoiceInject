@@ -108,6 +108,15 @@ public class MainActivity extends Activity {
         });
         root.addView(clearLogBtn);
 
+        Button rebootBtn = makeButton("重启车机（使模块生效）");
+        rebootBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmReboot();
+            }
+        });
+        root.addView(rebootBtn);
+
         ScrollView scroll = new ScrollView(this);
         mLogView = new TextView(this);
         mLogView.setTextSize(11);
@@ -254,5 +263,33 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "日志已清空", Toast.LENGTH_SHORT).show();
         }
         mLogView.setText("");
+    }
+
+    // ------------------------------------------------------------------
+    // 重启车机
+    // ------------------------------------------------------------------
+
+    private void confirmReboot() {
+        new AlertDialog.Builder(this)
+                .setTitle("确认重启车机")
+                .setMessage("重启后 LSPosed 模块会生效。\n\n需要 root 权限，首次使用请在 Magisk 中允许本应用获取 root。")
+                .setPositiveButton("立即重启", (d, w) -> rebootDevice())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void rebootDevice() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "reboot"});
+            p.waitFor();
+            // 极少数设备 reboot 不生效，fallback 到 svc power reboot
+            try {
+                Runtime.getRuntime().exec(new String[]{"su", "-c", "svc power reboot"});
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable t) {
+            Toast.makeText(this, "重启失败：未获取 root 权限。\n请在 Magisk 中允许本应用获取 root。",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 }
