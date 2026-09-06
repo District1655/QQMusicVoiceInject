@@ -64,7 +64,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 ## 工程结构
 
 ```
-QQMusicVoiceInject/
+fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
