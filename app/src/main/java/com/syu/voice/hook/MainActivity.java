@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         root.addView(version);
 
         mStatusView = new TextView(this);
-        mStatusView.setText("状态：尚未检查更新\n日志目录：/sdcard/fytMusicVoiceInject/logs/");
+        mStatusView.setText("状态：尚未检查更新\n日志目录：/sdcard/Android/data/com.syu.voice.hook/files/logs/");
         mStatusView.setTextSize(13);
         mStatusView.setTextColor(0xFF4B5563);
         mStatusView.setPadding(12, 12, 12, 12);
@@ -90,11 +90,7 @@ public class MainActivity extends Activity {
         logBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!hasStoragePermission()) {
-                    showStoragePermissionDialog();
-                } else {
-                    loadLog();
-                }
+                loadLog();
             }
         });
         root.addView(logBtn);
@@ -254,8 +250,9 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
 
     private File logFile() {
+        // 日志写在模块 App 外部私有目录，车助理（system uid）可写入，模块 App 读取无需权限
         return new File(Environment.getExternalStorageDirectory(),
-                "fytMusicVoiceInject/logs/fytMusicVoiceInject.log");
+                "Android/data/com.syu.voice.hook/files/logs/fytMusicVoiceInject.log");
     }
 
     private void loadLog() {

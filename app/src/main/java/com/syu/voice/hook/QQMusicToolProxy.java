@@ -48,10 +48,27 @@ public final class QQMusicToolProxy {
         private final ClassLoader mCl;
         private final String mPkg;
         private volatile Object mStatusListener;
+        private volatile QQMusicController mQQController;
 
         Handler(ClassLoader cl, String pkg) {
             this.mCl = cl;
             this.mPkg = pkg;
+        }
+
+        /** QQ音乐车机版/HD版优先用原生 scheme 控制（不依赖 MediaSession） */
+        private boolean useQQController() {
+            return mPkg.equals("com.tencent.qqmusiccar")
+                    || mPkg.equals("com.tencent.qqmusicpad");
+        }
+
+        private QQMusicController qq() {
+            if (mQQController == null) {
+                Context ctx = ContextHolder.get();
+                if (ctx != null) {
+                    mQQController = new QQMusicController(ctx, mPkg);
+                }
+            }
+            return mQQController;
         }
 
         @Override
@@ -72,39 +89,68 @@ public final class QQMusicToolProxy {
                     case "play":
                     case "continuePlay":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: " + name);
-                        transport().play();
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_PLAY, 100);
+                        } else {
+                            transport().play();
+                        }
                         return null;
 
                     case "pause":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: " + name);
-                        transport().pause();
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_PAUSE, 100);
+                        } else {
+                            transport().pause();
+                        }
                         return null;
 
                     case "next":
                     case "switchSong":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: " + name);
-                        transport().skipToNext();
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_NEXT, 100);
+                        } else {
+                            transport().skipToNext();
+                        }
                         return null;
 
                     case "prev":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: " + name);
-                        transport().skipToPrevious();
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_PREV, 100);
+                        } else {
+                            transport().skipToPrevious();
+                        }
                         return null;
 
                     case "exit":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: exit");
-                        transport().pause();
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_PAUSE, 100);
+                        } else {
+                            transport().pause();
+                        }
                         return null;
 
                     case "playRandom":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: playRandom");
-                        transport().playFromMediaId("__random__", null);
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_MODE_SHUFFLE, 100);
+                            qq().controlPlay(QQMusicController.CTRL_PLAY, 100);
+                        } else {
+                            transport().playFromMediaId("__random__", null);
+                        }
                         return null;
 
                     case "playMusic":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: playMusic "
                                 + describeModel(args != null && args.length > 0 ? args[0] : null));
-                        playMusic(args != null && args.length > 0 ? args[0] : null);
+                        if (useQQController() && qq() != null) {
+                            qq().searchAndPlay(extractQuery(args != null && args.length > 0 ? args[0] : null));
+                        } else {
+                            playMusic(args != null && args.length > 0 ? args[0] : null);
+                        }
                         return null;
 
                     case "getCurrentMusicModel":
@@ -146,6 +192,30 @@ public final class QQMusicToolProxy {
                 return "title=" + title + ", artist=" + artist;
             } catch (Throwable t) {
                 return String.valueOf(model);
+            }
+        }
+
+        /** 从 MusicModel 提取搜索关键词（歌名 + 歌手），供 QQ音乐 scheme 点歌使用 */
+        private static String extractQuery(Object musicModel) {
+            if (musicModel == null) {
+                return "";
+            }
+            try {
+                Object title = XposedHelpers.callMethod(musicModel, "getTitle");
+                Object artistArr = XposedHelpers.callMethod(musicModel, "getArtist");
+                StringBuilder query = new StringBuilder();
+                if (title != null && !String.valueOf(title).isEmpty()) {
+                    query.append(title);
+                }
+                if (artistArr instanceof String[] && ((String[]) artistArr).length > 0) {
+                    if (query.length() > 0) {
+                        query.append(' ');
+                    }
+                    query.append(((String[]) artistArr)[0]);
+                }
+                return query.toString();
+            } catch (Throwable t) {
+                return "";
             }
         }
 

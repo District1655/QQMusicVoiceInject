@@ -14,15 +14,18 @@ import java.util.Locale;
 /**
  * 运行日志：Logcat + 文件双写。
  *
- * 日志文件位置：/sdcard/fytMusicVoiceInject/logs/fytMusicVoiceInject.log
- * （车助理是 system uid，可直接写 /sdcard；可通过模块主界面查看）
+ * 日志文件位置：/sdcard/Android/data/com.syu.voice.hook/files/logs/fytMusicVoiceInject.log
+ * （模块 App 的外部私有目录，车助理是 system uid 可写入，模块 App 读取无需任何权限，
+ *  避免 Android 11+ MANAGE_EXTERNAL_STORAGE 在车机上无法授权的问题）
  * 单文件超过 MAX_BYTES 自动轮转为 .1 / .2，保留 3 份。
  */
 public final class LogManager {
 
     public static final String TAG = MainHook.TAG;
 
-    private static final String LOG_DIR = "fytMusicVoiceInject/logs";
+    // 模块 App 的外部私有目录：/sdcard/Android/data/com.syu.voice.hook/files/
+    // 车助理（system uid）可写入，模块 App 读取无需权限
+    private static final String LOG_DIR = "Android/data/com.syu.voice.hook/files/logs";
     private static final String LOG_NAME = "fytMusicVoiceInject.log";
     private static final long MAX_BYTES = 1024 * 1024; // 1MB
     private static final int KEEP_BACKUPS = 3;
