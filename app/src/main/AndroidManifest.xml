@@ -19,7 +19,7 @@
         tools:ignore="ScopedStorage" />
 
     <application
-        android:label="QQ音乐语音注入"
+        android:label="方易通语音助手第三方音乐适配模块"
         android:icon="@android:drawable/ic_media_play">
 
         <!-- 模块主界面：查看日志 / 检查更新 / 下载安装 -->
@@ -38,7 +38,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="为方易通车助理(com.syu.voice)注入QQ音乐/网易云车机版支持，含日志与在线更新" />
+            android:value="为方易通语音助手(com.syu.voice)适配第三方音乐播放器(QQ音乐/网易云车机版等)，含运行日志与在线更新" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />

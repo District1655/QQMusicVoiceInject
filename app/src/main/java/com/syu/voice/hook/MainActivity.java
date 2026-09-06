@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF4F3EE);
 
         TextView title = new TextView(this);
-        title.setText("QQ音乐语音注入 · 车助理适配");
+        title.setText("方易通语音助手第三方音乐适配模块");
         title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(0xFF1A1B1C);

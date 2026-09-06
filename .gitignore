@@ -4,6 +4,9 @@ build/
 **/build/
 local.properties
 
+# 本地产物（Release APK 由 GitHub Actions 发布，不入库）
+release/
+
 # IDE
 .idea/
 *.iml
