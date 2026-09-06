@@ -13,8 +13,10 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -40,10 +42,15 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
+        // 外层 ScrollView：横屏时可滚动整个页面，避免按钮占满屏幕后无法下滑
+        ScrollView outerScroll = new ScrollView(this);
+        outerScroll.setFillViewport(true);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(24, 24, 24, 24);
         root.setBackgroundColor(0xFFF4F3EE);
+        outerScroll.addView(root);
 
         TextView title = new TextView(this);
         title.setText("fytMusicVoiceInject · 方易通语音助手音乐适配");
@@ -66,6 +73,28 @@ public class MainActivity extends Activity {
         mStatusView.setPadding(12, 12, 12, 12);
         mStatusView.setBackgroundColor(0xFFFFFFFF);
         root.addView(mStatusView);
+
+        // 日志开关
+        boolean logEnabled = getSharedPreferences("fyt_music_voice_prefs", MODE_PRIVATE)
+                .getBoolean("log_enabled", true);
+        Switch logSwitch = new Switch(this);
+        logSwitch.setText("记录运行日志（关闭后仅 Logcat 输出，不写文件）");
+        logSwitch.setTextSize(13);
+        logSwitch.setTextColor(0xFF1A1B1C);
+        logSwitch.setChecked(logEnabled);
+        logSwitch.setPadding(0, 12, 0, 4);
+        logSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                getSharedPreferences("fyt_music_voice_prefs", MODE_PRIVATE)
+                        .edit().putBoolean("log_enabled", isChecked).apply();
+                LogManager.setEnabled(isChecked);
+                Toast.makeText(MainActivity.this,
+                        "运行日志已" + (isChecked ? "开启" : "关闭") + "（重启车机后生效）",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        root.addView(logSwitch);
 
         mCheckBtn = makeButton("检查更新（GitHub Releases）");
         mCheckBtn.setOnClickListener(new View.OnClickListener() {
@@ -113,20 +142,26 @@ public class MainActivity extends Activity {
         });
         root.addView(rebootBtn);
 
-        ScrollView scroll = new ScrollView(this);
+        // 日志区域：固定高度，内部 ScrollView 独立滚动
+        ScrollView logScroll = new ScrollView(this);
         mLogView = new TextView(this);
         mLogView.setTextSize(11);
         mLogView.setTypeface(Typeface.MONOSPACE);
         mLogView.setTextColor(0xFF1A1B1C);
         mLogView.setPadding(8, 8, 8, 8);
-        scroll.addView(mLogView);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        lp.topMargin = 8;
-        scroll.setLayoutParams(lp);
-        root.addView(scroll);
+        mLogView.setBackgroundColor(0xFFFFFFFF);
+        logScroll.addView(mLogView);
+        LinearLayout.LayoutParams logLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(260));
+        logLp.topMargin = 12;
+        logScroll.setLayoutParams(logLp);
+        root.addView(logScroll);
 
-        setContentView(root);
+        setContentView(outerScroll);
+    }
+
+    private int dp(int dp) {
+        return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private Button makeButton(String text) {

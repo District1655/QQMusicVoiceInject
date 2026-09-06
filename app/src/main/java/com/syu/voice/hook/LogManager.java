@@ -31,8 +31,19 @@ public final class LogManager {
     private static final int KEEP_BACKUPS = 3;
 
     private static volatile File sLogFile;
+    private static volatile boolean sEnabled = true;
 
     private LogManager() {
+    }
+
+    /** 设置是否启用文件日志（Logcat 日志不受影响） */
+    public static void setEnabled(boolean enabled) {
+        sEnabled = enabled;
+        Log.i(TAG, "文件日志已" + (enabled ? "启用" : "关闭"));
+    }
+
+    public static boolean isEnabled() {
+        return sEnabled;
     }
 
     /** 在目标进程内初始化日志文件（幂等） */
@@ -80,7 +91,7 @@ public final class LogManager {
     }
 
     private static synchronized void write(String line) {
-        if (sLogFile == null) {
+        if (!sEnabled || sLogFile == null) {
             return;
         }
         try {

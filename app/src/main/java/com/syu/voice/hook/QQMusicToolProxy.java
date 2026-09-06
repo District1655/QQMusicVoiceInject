@@ -74,6 +74,22 @@ public final class QQMusicToolProxy {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) {
             final String name = method.getName();
+            // 全方法调用日志：用于排查车助理点播时实际调用的方法名和参数
+            StringBuilder sb = new StringBuilder();
+            sb.append("[").append(mPkg).append("] MusicTool.").append(name).append("(");
+            if (args != null) {
+                for (int i = 0; i < args.length; i++) {
+                    if (i > 0) sb.append(", ");
+                    Object a = args[i];
+                    if (a == null) {
+                        sb.append("null");
+                    } else {
+                        sb.append(a.getClass().getSimpleName()).append(":").append(describeModel(a));
+                    }
+                }
+            }
+            sb.append(")");
+            LogManager.i(TAG, sb.toString());
             try {
                 switch (name) {
                     case "setStatusListener":

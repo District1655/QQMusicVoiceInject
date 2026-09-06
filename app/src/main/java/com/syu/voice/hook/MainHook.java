@@ -33,9 +33,21 @@ public class MainHook implements IXposedHookLoadPackage {
                         Context app = (Context) param.thisObject;
                         ContextHolder.set(app);
                         LogManager.init(app);
+                        // 从模块 App 的 SharedPreferences 读取日志开关（默认开启）
+                        try {
+                            Context moduleCtx = app.createPackageContext(
+                                    "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
+                            boolean logEnabled = moduleCtx.getSharedPreferences(
+                                    "fyt_music_voice_prefs", Context.MODE_PRIVATE)
+                                    .getBoolean("log_enabled", true);
+                            LogManager.setEnabled(logEnabled);
+                        } catch (Throwable t) {
+                            LogManager.w(TAG, "读取日志开关失败，使用默认开启: " + t.getMessage());
+                        }
                         LogManager.i(TAG, "模块加载，进程: " + lpparam.processName
                                 + "，版本: " + BuildConfig.VERSION_NAME
-                                + "，Context: " + app.getPackageName());
+                                + "，Context: " + app.getPackageName()
+                                + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
                     }
                 });
 
