@@ -73,13 +73,25 @@ public final class UpdateManager {
             info.versionCode = parseTagVersion(info.tagName);
             JSONArray assets = root.optJSONArray("assets");
             if (assets != null) {
+                // 优先选择本模块命名规范的产物（QQMusicVoiceInject-*.apk），
+                // 避免误选历史遗留的同名 app-debug.apk
+                String fallback = null;
                 for (int i = 0; i < assets.length(); i++) {
                     JSONObject a = assets.getJSONObject(i);
                     String name = a.optString("name", "");
-                    if (name.endsWith(".apk")) {
+                    if (!name.endsWith(".apk")) {
+                        continue;
+                    }
+                    if (fallback == null) {
+                        fallback = a.optString("browser_download_url", "");
+                    }
+                    if (name.startsWith("QQMusicVoiceInject")) {
                         info.downloadUrl = a.optString("browser_download_url", "");
                         break;
                     }
+                }
+                if (info.downloadUrl == null) {
+                    info.downloadUrl = fallback;
                 }
             }
             return info;
