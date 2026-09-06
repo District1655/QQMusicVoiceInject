@@ -13,14 +13,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  */
 public class MainHook implements IXposedHookLoadPackage {
 
-    public static final String TAG = "QQMusicVoice";
+    public static final String TAG = "fytMusicVoice";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!"com.syu.voice".equals(lpparam.packageName)) {
             return;
         }
-        // 初始化文件日志（Logcat + /sdcard/QQMusicVoiceInject/logs/）
+        // 初始化文件日志（Logcat + /sdcard/fytMusicVoiceInject/logs/）
         try {
             Object app = XposedHelpers.callStaticMethod(
                     XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),

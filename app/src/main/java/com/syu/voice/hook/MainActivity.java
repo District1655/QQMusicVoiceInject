@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         root.setBackgroundColor(0xFFF4F3EE);
 
         TextView title = new TextView(this);
-        title.setText("方易通语音助手第三方音乐适配模块");
+        title.setText("fytMusicVoiceInject · 方易通语音助手音乐适配");
         title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(0xFF1A1B1C);
@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         root.addView(version);
 
         mStatusView = new TextView(this);
-        mStatusView.setText("状态：尚未检查更新\n日志目录：/sdcard/QQMusicVoiceInject/logs/");
+        mStatusView.setText("状态：尚未检查更新\n日志目录：/sdcard/fytMusicVoiceInject/logs/");
         mStatusView.setTextSize(13);
         mStatusView.setTextColor(0xFF4B5563);
         mStatusView.setPadding(12, 12, 12, 12);
@@ -135,11 +135,11 @@ public class MainActivity extends Activity {
     /** Android 11+ 读取 /sdcard 日志需要授权（一次性） */
     private void ensureAllFilesPermission() {
         if (Build.VERSION.SDK_INT >= 30) {
-            File logDir = new File(Environment.getExternalStorageDirectory(), "QQMusicVoiceInject/logs");
+            File logDir = new File(Environment.getExternalStorageDirectory(), "fytMusicVoiceInject/logs");
             if (!logDir.canRead()) {
                 new AlertDialog.Builder(this)
                         .setTitle("需要存储权限")
-                        .setMessage("查看日志需要访问 /sdcard/QQMusicVoiceInject/logs，请在授权页点击“允许”后返回。\n（注入功能本身不依赖该权限）")
+                        .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页点击“允许”后返回。\n（注入功能本身不依赖该权限）")
                         .setPositiveButton("去授权", (d, w) -> {
                             try {
                                 Intent intent = new Intent(
@@ -215,7 +215,7 @@ public class MainActivity extends Activity {
 
     private File logFile() {
         return new File(Environment.getExternalStorageDirectory(),
-                "QQMusicVoiceInject/logs/QQMusicVoiceInject.log");
+                "fytMusicVoiceInject/logs/fytMusicVoiceInject.log");
     }
 
     private void loadLog() {

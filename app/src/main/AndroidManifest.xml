@@ -19,7 +19,7 @@
         tools:ignore="ScopedStorage" />
 
     <application
-        android:label="方易通语音助手第三方音乐适配模块"
+        android:label="fytMusicVoiceInject"
         android:icon="@android:drawable/ic_media_play">
 
         <!-- 模块主界面：查看日志 / 检查更新 / 下载安装 -->

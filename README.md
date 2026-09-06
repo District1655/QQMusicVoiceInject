@@ -1,4 +1,4 @@
-﻿# 方易通语音助手第三方音乐适配模块（LSPosed）
+# fytMusicVoiceInject（方易通语音助手第三方音乐适配模块，LSPosed）
 
 为**方易通车机语音助手"车助理"**（包名 `com.syu.voice`，APK：车助理设置_1.0.apk）
 注入 **QQ 音乐车机版 / QQ 音乐 / 网易云音乐车机版 / 网易云音乐** 等第三方播放器支持，
@@ -54,8 +54,8 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 
 - **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌 / 语音点歌（playFromSearch）
 - **运行日志**：Logcat + 文件双写
-  - 日志文件：`/sdcard/QQMusicVoiceInject/logs/QQMusicVoiceInject.log`（1MB 自动轮转，保留 3 份）
-  - 查看方式：打开模块 App →「查看运行日志」；或 adb：`adb logcat -s QQMusicVoice`
+  - 日志文件：`/sdcard/fytMusicVoiceInject/logs/fytMusicVoiceInject.log`（1MB 自动轮转，保留 3 份）
+  - 查看方式：打开模块 App →「查看运行日志」；或 adb：`adb logcat -s fytMusicVoice`
 - **在线更新**：模块 App →「检查更新」→「下载并安装」
   - 数据源：`https://api.github.com/repos/District1655/fytMusicVoiceInject/releases/latest`
   - 版本规则：tag `vX.Y.Z` ↔ versionCode `主*10000+次*100+补丁`
@@ -94,7 +94,7 @@ QQMusicVoiceInject/
 
 1. 车机已 root 并安装 **LSPosed** 与 **Magisk**（或 KSU）；
 2. 安装模块 APK（来自 Release 或本地构建）；
-3. LSPosed → 模块 → 勾选「方易通语音助手第三方音乐适配模块」→ 作用域勾选 **车助理**（com.syu.voice）；
+3. LSPosed → 模块 → 勾选「fytMusicVoiceInject」→ 作用域勾选 **车助理**（com.syu.voice）；
 4. **重启车机**；
 5. 打开"车助理设置 → 音乐工具选择"→ 选择 **QQ音乐车机版 / 网易云音乐车机版**；
 6. 打开对应播放器开始播放，测试「播放 / 暂停 / 下一首 / 播放《XXX》」。
@@ -107,7 +107,7 @@ QQMusicVoiceInject/
 | 能播放但"点歌"没反应 | 部分车机版对 `playFromSearch` 支持有限，需播放器内先登录、搜索服务正常 |
 | 收藏/播放模式无效果 | 目标车机版无公开收藏/循环模式 AIDL，接口为空实现（语音会跳过） |
 | 想加其他播放器 | 编辑 `MusicToolInject.TARGET_MUSIC_PKGS` 加包名重新构建（需实现 MediaSession） |
-| 排查问题 | 打开模块 App →「查看运行日志」；或 `adb logcat -s QQMusicVoice` |
+| 排查问题 | 打开模块 App →「查看运行日志」；或 `adb logcat -s fytMusicVoice` |
 | 检查更新失败 | 车机需能访问 `api.github.com`；仓库需已有 Release（首次 push 后自动发布） |
 
 ## 安全与合规

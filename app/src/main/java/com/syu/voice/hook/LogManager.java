@@ -14,7 +14,7 @@ import java.util.Locale;
 /**
  * 运行日志：Logcat + 文件双写。
  *
- * 日志文件位置：/sdcard/QQMusicVoiceInject/logs/QQMusicVoiceInject.log
+ * 日志文件位置：/sdcard/fytMusicVoiceInject/logs/fytMusicVoiceInject.log
  * （车助理是 system uid，可直接写 /sdcard；可通过模块主界面查看）
  * 单文件超过 MAX_BYTES 自动轮转为 .1 / .2，保留 3 份。
  */
@@ -22,8 +22,8 @@ public final class LogManager {
 
     public static final String TAG = MainHook.TAG;
 
-    private static final String LOG_DIR = "QQMusicVoiceInject/logs";
-    private static final String LOG_NAME = "QQMusicVoiceInject.log";
+    private static final String LOG_DIR = "fytMusicVoiceInject/logs";
+    private static final String LOG_NAME = "fytMusicVoiceInject.log";
     private static final long MAX_BYTES = 1024 * 1024; // 1MB
     private static final int KEEP_BACKUPS = 3;
 

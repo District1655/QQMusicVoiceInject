@@ -53,7 +53,7 @@ public final class UpdateManager {
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("Accept", "application/vnd.github+json");
-            conn.setRequestProperty("User-Agent", "QQMusicVoiceInject");
+            conn.setRequestProperty("User-Agent", "fytMusicVoiceInject");
             int code = conn.getResponseCode();
             if (code != 200) {
                 LogManager.w(TAG, "检查更新 HTTP " + code);
@@ -73,7 +73,7 @@ public final class UpdateManager {
             info.versionCode = parseTagVersion(info.tagName);
             JSONArray assets = root.optJSONArray("assets");
             if (assets != null) {
-                // 优先选择本模块命名规范的产物（QQMusicVoiceInject-*.apk），
+                // 优先选择本模块命名规范的产物（fytMusicVoiceInject-*.apk），
                 // 避免误选历史遗留的同名 app-debug.apk
                 String fallback = null;
                 for (int i = 0; i < assets.length(); i++) {
@@ -85,7 +85,7 @@ public final class UpdateManager {
                     if (fallback == null) {
                         fallback = a.optString("browser_download_url", "");
                     }
-                    if (name.startsWith("QQMusicVoiceInject")) {
+                    if (name.startsWith("fytMusicVoiceInject")) {
                         info.downloadUrl = a.optString("browser_download_url", "");
                         break;
                     }
@@ -134,7 +134,7 @@ public final class UpdateManager {
             req.setTitle("QQ音乐语音注入更新");
             req.setDescription("正在下载新版本 APK");
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "QQMusicVoiceInject.apk");
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "fytMusicVoiceInject.apk");
             return dm.enqueue(req);
         } catch (Throwable t) {
             LogManager.e(TAG, "发起下载失败", t);
@@ -153,7 +153,7 @@ public final class UpdateManager {
             // 兜底：直接指向 Download 目录文件
             return Uri.fromFile(new java.io.File(
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "QQMusicVoiceInject.apk"));
+                    "fytMusicVoiceInject.apk"));
         } catch (Throwable t) {
             LogManager.e(TAG, "获取下载文件失败", t);
             return null;

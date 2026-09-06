@@ -40,18 +40,18 @@ jobs:
         run: |
           VER=$(grep -oP "versionName \"\K[^\"]+" app/build.gradle)
           echo "VERSION=$VER" >> $GITHUB_OUTPUT
-          echo "app-debug.apk -> QQMusicVoiceInject-v$VER.apk"
+          echo "app-debug.apk -> fytMusicVoiceInject-v$VER.apk"
 
       - name: Rename APK with app name and version
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk "QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "fytMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk"
           ls -la *.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}
-          path: QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk
+          name: fytMusicVoiceInject-v${{ steps.version.outputs.VERSION }}
+          path: fytMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -61,10 +61,10 @@ jobs:
           name: v${{ steps.version.outputs.VERSION }}
           update_release_body: true
           body: |
-            ## QQ音乐语音注入 v${{ steps.version.outputs.VERSION }}
+            ## fytMusicVoiceInject v${{ steps.version.outputs.VERSION }}
 
-            - 自动构建产物：QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk（LSPosed 模块，debug 签名即可安装）
+            - 自动构建产物：fytMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk（LSPosed 模块，debug 签名即可安装）
             - 支持：QQ音乐车机版 / QQ音乐 / 网易云音乐车机版 / 网易云音乐
             - 功能：MediaSession 语音控制（播放/暂停/切歌/点歌）、运行日志、在线更新
-          files: QQMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk
+          files: fytMusicVoiceInject-v${{ steps.version.outputs.VERSION }}.apk
           generate_release_notes: false
