@@ -1,4 +1,4 @@
-﻿package com.syu.voice.hook;
+package com.syu.voice.hook;
 
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
