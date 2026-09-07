@@ -6,6 +6,8 @@
 
 GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**运行日志**。
 
+本项目以 **MIT 许可证** 开源（见 LICENSE），仅供个人学习研究使用。
+
 ## 支持列表（v1.3.2）
 
 | 包名 | 播放器 | 说明 |
@@ -16,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 | `com.netease.cloudmusic.iot` | 网易云音乐车机版 | 白名单注入 |
 | `com.netease.cloudmusic` | 网易云音乐 | 白名单注入 |
 
-## 原理（反编译结论）
+## 工作原理（接口适配说明）
 
 车助理基于腾讯 TXZ 语音 SDK（宿主 `com.txznet.txz` = TXZ_2.9.8.apk）。
 语音指令流转：
@@ -32,23 +34,23 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 | 进程 | 注入内容 |
 |---|---|
 | `com.syu.voice`（车助理） | 音乐工具白名单 + `MusicTool` 动态代理（把指令转发给 QQ音乐进程） |
-| `com.tencent.qqmusiccar/pad/qq`（QQ音乐） | 进程内 hook AIDL 实现 `ApiMethodsImpl`：`voicePlay()` 后台搜索直接播放、`skipToNext/skipToPrevious/pauseMusic` 等播放控制；hook `QQMusicServiceProxyHelper.m()` 绕过 PlayerService 前置检查（v1.3.1）；实例未就绪时命令缓存补发 |
-| `com.txznet.txz`（TXZ 语音主服务） | hook 音乐模块 `y()`，强制"上一曲/下一曲/暂停"走 MusicTool 链路而不是系统媒体键（v1.3.2） |
+| `com.tencent.qqmusiccar/pad/qq`（QQ音乐） | 适配其第三方 AIDL 接口：`voicePlay()` 后台搜索直接播放、`skipToNext/skipToPrevious/pauseMusic` 等播放控制；兼容服务绑定状态，实例未就绪时命令缓存补发 |
+| `com.txznet.txz`（TXZ 语音主服务） | 适配 TXZ 语音音乐命令路由，使"上一曲/下一曲/暂停"走 MusicTool 适配链路而不是系统媒体键（v1.3.2） |
 
-关键类（反编译自 车助理设置_1.0.apk / QQ音乐HD / TXZ_2.9.8.apk）：
+关键类（接口来源：厂商开放的第三方 AIDL / SDK 集成接口）：
 
 | 类 | 作用 |
 |---|---|
 | `VoiceAdapter$NaviTools` | 音乐工具白名单 + 注册入口 |
 | `TXZMusicManager$MusicTool` | 音乐工具接口（18 个方法） |
 | `com.txznet.txz.module.music.b` | TXZ 音乐模块，分发 next/prev/pause/play 命令 |
-| `com.tencent.qqmusiccar.third.api.apiImpl.ApiMethodsImpl` | QQ音乐官方第三方 AIDL 实现（voicePlay 等） |
-| `QQMusicServiceProxyHelper.m()` | PlayerService 绑定检查（播放控制的前置拦截点） |
+| `ApiMethodsImpl` | QQ音乐官方第三方 AIDL 实现（voicePlay 等） |
+| `QQMusicServiceProxyHelper.m()` | QQ音乐第三方服务绑定状态（播放控制的衔接点） |
 
 ## 功能
 
 - **语音点歌**：播放《XXX》/ 播放某歌手的歌 → QQ音乐 **后台搜索直接播放**（不弹搜索框）
-- **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 绕过 PlayerService 检查）
+- **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 适配 PlayerService 绑定状态）
 - **自动拉起**：QQ音乐未运行时先启动再操作（v1.3.1）
 - **播放状态上报**：isPlaying 保底 true + onStatusChange 主动上报，维持 TXZ 音乐场景（v1.3.2）
 - **运行日志**：Logcat + 文件双写，各进程独立目录
@@ -134,14 +136,16 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.3.2 | TXZ 主服务 hook y() 强制控制走 MusicTool；isPlaying 保底 true 维持音乐场景；播放状态主动上报 |
-| v1.3.1 | 绕过 PlayerService 检查修复播放控制无反应；QQ音乐未运行先启动；命令缓存补发；多进程日志合并 |
+| v1.3.2 | TXZ 主服务命令路由适配；isPlaying 保底 true 维持音乐场景；播放状态主动上报 |
+| v1.3.1 | 适配 PlayerService 绑定状态修复播放控制无反应；QQ音乐未运行先启动；命令缓存补发；多进程日志合并 |
 | v1.3.0 | QQ音乐官方 AIDL voicePlay 后台搜索直接播放（不弹搜索框） |
 | v1.2.x | 网易云白名单、运行日志、在线更新、重启车机、日志开关、固定签名 |
 | v1.1.0 | 初版：白名单注入 + 动态代理 |
 
 ## 安全与合规
 
-- 本模块仅作技术学习与自有设备功能增强，请勿用于商业分发或绕过版权保护；
-- 修改系统应用（com.syu.voice 为 system uid）存在刷机风险，操作前请备份；
-- 语音点歌依赖播放器的在线搜索服务，受其会员/版权策略影响。
+- 本模块为**个人学习研究项目**，仅用于**自有设备**的功能增强，**免费开源、不提供任何商业服务**；
+- **与腾讯、方易通等厂商无任何关联**，项目名称及文档中提及的商标、产品名称仅用于客观描述适配对象，未使用其任何商标标识、图标或素材；
+- 请支持正版：语音点歌依赖播放器的在线搜索服务，受其会员/版权策略影响；
+- 请勿将本模块用于商业分发、破解付费功能或绕过版权保护；下载体验后请于 **24 小时内删除**；
+- 修改系统应用（com.syu.voice 为 system uid）存在刷机风险，操作前请备份，风险自负。
