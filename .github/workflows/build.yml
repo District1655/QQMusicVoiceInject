@@ -3,6 +3,13 @@ name: Build APK and Publish Release
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'app/**'
+      - '.github/workflows/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - 'gradlew*'
   workflow_dispatch:
 
 permissions:
