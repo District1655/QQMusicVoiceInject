@@ -32,7 +32,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 | 进程 | 注入内容 |
 |---|---|
 | `com.syu.voice`（车助理） | 音乐工具白名单 + `MusicTool` 动态代理（把指令转发给 QQ音乐进程） |
-| `com.tencent.qqmusiccar/pad/qq`（QQ音乐） | 进程内 hook QQ音乐官方 AIDL 实现 `ApiMethodsImpl`：`voicePlay()` 后台搜索直接播放、`skipToNext/skipToPrevious/pauseMusic` 等播放控制；hook `QQMusicServiceProxyHelper.m()` 绕过 PlayerService 前置检查（v1.3.1）；实例未就绪时命令缓存补发 |
+| `com.tencent.qqmusiccar/pad/qq`（QQ音乐） | 进程内 hook AIDL 实现 `ApiMethodsImpl`：`voicePlay()` 后台搜索直接播放、`skipToNext/skipToPrevious/pauseMusic` 等播放控制；hook `QQMusicServiceProxyHelper.m()` 绕过 PlayerService 前置检查（v1.3.1）；实例未就绪时命令缓存补发 |
 | `com.txznet.txz`（TXZ 语音主服务） | hook 音乐模块 `y()`，强制"上一曲/下一曲/暂停"走 MusicTool 链路而不是系统媒体键（v1.3.2） |
 
 关键类（反编译自 车助理设置_1.0.apk / QQ音乐HD / TXZ_2.9.8.apk）：
