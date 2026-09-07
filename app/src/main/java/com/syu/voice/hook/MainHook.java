@@ -10,7 +10,11 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * LSPosed 模块入口。
  *
- * 目标进程：com.syu.voice（方易通"车助理"语音助手，系统签名应用）
+ * 目标进程：
+ * 1. com.syu.voice（方易通"车助理"语音助手，系统签名应用）
+ *    —— 白名单注入 + MusicTool 动态代理（发广播控制）
+ * 2. com.tencent.qqmusiccar / com.tencent.qqmusicpad / com.tencent.qqmusic
+ *    —— 进程内 hook，直接调用 QQ音乐官方 AIDL 后台播放接口（voicePlay 等）
  */
 public class MainHook implements IXposedHookLoadPackage {
 
@@ -18,7 +22,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if (!"com.syu.voice".equals(lpparam.packageName)) {
+        String pkg = lpparam.packageName;
+
+        // QQ音乐进程：v1.3.0 后台搜索直接播放（需要用户在 LSPosed 作用域勾选 QQ音乐）
+        if (QQProcessHook.isQQMusicPkg(pkg)) {
+            QQProcessHook.hook(pkg, lpparam.classLoader);
+            return;
+        }
+
+        if (!"com.syu.voice".equals(pkg)) {
             return;
         }
 
