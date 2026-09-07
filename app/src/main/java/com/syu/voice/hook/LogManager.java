@@ -46,19 +46,31 @@ public final class LogManager {
         return sEnabled;
     }
 
-    /** 在目标进程内初始化日志文件（幂等） */
+    /** 在目标进程内初始化日志文件（幂等）。各进程写自己 App 的外部私有目录，无需任何权限 */
     public static synchronized void init(Context context) {
         if (sLogFile != null) {
             return;
         }
         try {
-            File base = Environment.getExternalStorageDirectory();
-            File dir = new File(base, LOG_DIR);
+            File dir = null;
+            // 优先写"本进程所属 App"的外部私有目录：
+            //   车助理进程 -> /sdcard/Android/data/com.syu.voice.hook/files/logs
+            //   QQ音乐进程 -> /sdcard/Android/data/com.tencent.qqmusicpad/files/logs
+            if (context != null) {
+                try {
+                    dir = context.getExternalFilesDir("logs");
+                } catch (Throwable ignored) {
+                }
+            }
+            if (dir == null) {
+                File base = Environment.getExternalStorageDirectory();
+                dir = new File(base, LOG_DIR);
+            }
             if (!dir.exists() && !dir.mkdirs()) {
-                dir = context.getFilesDir();
+                dir = context != null ? context.getFilesDir() : dir;
             }
             sLogFile = new File(dir, LOG_NAME);
-            write("==== 日志启动 " + stamp() + " ====");
+            write("==== 日志启动 " + stamp() + " (pid=" + android.os.Process.myPid() + ") ====");
             Log.i(TAG, "日志文件: " + sLogFile.getAbsolutePath());
         } catch (Throwable t) {
             Log.e(TAG, "日志初始化失败", t);

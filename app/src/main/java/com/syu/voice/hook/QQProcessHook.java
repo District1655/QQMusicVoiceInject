@@ -13,19 +13,23 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * QQ音乐进程内注入（v1.3.0 新增）。
+ * QQ音乐进程内注入（v1.3.0 新增，v1.3.1 增强）。
  *
  * 目标进程：com.tencent.qqmusiccar（车机版）/ com.tencent.qqmusicpad（HD/Pad版）/
  * com.tencent.qqmusic（手机版）。用户需在 LSPosed 作用域中额外勾选已安装的 QQ音乐包。
  *
- * 做三件事：
+ * 做四件事：
  * 1. 捕获 ApiMethodsImpl 实例（hook ApiMethodsImpl 私有构造 + QQMusicApiService.onCreate），
  *    供 ApiHolder 进程内直接调用官方 AIDL 后台播放接口；
- * 2. hook BroadcastReceiverCenterForThird.onReceive（父类，pad 子类继承）：
+ * 2. hook 播放控制的前置检查 QQMusicServiceProxyHelper.m()，强制返回 true：
+ *    反编译确认 playMusic/pauseMusic/skipToNext/skipToPrevious/stopMusic 第一步都检查
+ *    m()（PlayerService 绑定状态），为 false 直接返回错误码 11、什么都不做。
+ *    我们强制放行后，控制会走到 PlayListProxyManager（其内部自己 bind PlayerService）。
+ * 3. hook BroadcastReceiverCenterForThird.onReceive（父类，pad 子类继承）：
  *    - action=8 点歌 -> 拦截 -> ApiHolder.voicePlay(query) 后台搜索直接播放（不弹搜索框 UI）
  *    - action=20 播放控制 -> 拦截 -> ApiHolder.control(m0, m1) 直接调播放器
- *    hook 未生效/实例未就绪时放行原逻辑（不退化）；
- * 3. Application.onCreate 时主动 bind QQMusicApiService，确保 ApiMethodsImpl 实例存在。
+ *    ApiMethodsImpl 实例未就绪时缓存命令（pending），实例就绪后自动补发；
+ * 4. Application.onCreate 时主动 bind QQMusicApiService，确保 ApiMethodsImpl 实例存在。
  */
 public final class QQProcessHook {
 
@@ -37,6 +41,18 @@ public final class QQProcessHook {
             "com.tencent.qqmusiccar.third.api.QQMusicApiService";
     private static final String API_IMPL =
             "com.tencent.qqmusiccar.third.api.apiImpl.ApiMethodsImpl";
+    private static final String SERVICE_PROXY_HELPER =
+            "com.tencent.qqmusic.qplayer.core.player.proxy.QQMusicServiceProxyHelper";
+
+    // ------------------------------------------------------------------
+    // pending：ApiMethodsImpl 未就绪时缓存命令，就绪后自动补发
+    // ------------------------------------------------------------------
+    private static volatile String sPendingQuery;
+    private static volatile int sPendingCmd = -2;   // -2 表示无 pending 控制
+    private static volatile long sPendingExtra;
+    private static final Handler sHandler = new Handler(Looper.getMainLooper());
+    private static volatile boolean sPolling;
+    private static volatile int sPollAttempts;
 
     private QQProcessHook() {
     }
@@ -57,6 +73,7 @@ public final class QQProcessHook {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     ApiHolder.set(param.thisObject);
+                    maybeFlushPending();
                 }
             });
             LogManager.d(TAG, "[" + pkg + "] hook ApiMethodsImpl 构造成功");
@@ -71,6 +88,7 @@ public final class QQProcessHook {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
                             captureFromService(param.thisObject);
+                            maybeFlushPending();
                         }
                     });
             LogManager.d(TAG, "[" + pkg + "] hook QQMusicApiService.onCreate 成功");
@@ -78,7 +96,23 @@ public final class QQProcessHook {
             LogManager.d(TAG, "[" + pkg + "] hook QQMusicApiService.onCreate 跳过: " + t.getMessage());
         }
 
-        // 3) hook 第三方控制广播接收器：拦截点歌/播放控制，改走内部 API 后台播放
+        // 3) hook 播放控制前置检查：强制跳过 PlayerService 绑定检查
+        //    反编译确认：m() 返回 false 时所有播放控制方法直接 return 11，什么都不做
+        try {
+            XposedHelpers.findAndHookMethod(SERVICE_PROXY_HELPER, cl, "m",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            LogManager.d(TAG, "[" + pkg + "] 强制放行 PlayerService 检查 (m() -> true)");
+                            param.setResult(true);
+                        }
+                    });
+            LogManager.i(TAG, "[" + pkg + "] 已 hook QQMusicServiceProxyHelper.m()，播放控制不再受 PlayerService 检查拦截");
+        } catch (Throwable t) {
+            LogManager.e(TAG, "[" + pkg + "] hook QQMusicServiceProxyHelper.m() 失败", t);
+        }
+
+        // 4) hook 第三方控制广播接收器：拦截点歌/播放控制，改走内部 API 后台播放
         try {
             XposedHelpers.findAndHookMethod(RECEIVER_CAR, cl,
                     "onReceive", Context.class, Intent.class, new XC_MethodHook() {
@@ -100,7 +134,7 @@ public final class QQProcessHook {
             LogManager.e(TAG, "[" + pkg + "] hook BroadcastReceiverCenterForThird 失败", t);
         }
 
-        // 4) Application.onCreate：初始化日志 + 主动 bind ApiService 确保实例存在
+        // 5) Application.onCreate：初始化日志 + 主动 bind ApiService 确保实例存在
         XposedHelpers.findAndHookMethod("android.app.Application", cl,
                 "onCreate", new XC_MethodHook() {
                     @Override
@@ -150,9 +184,8 @@ public final class QQProcessHook {
                         public void onServiceConnected(ComponentName name, IBinder service) {
                             LogManager.i(TAG, "[" + pkg + "] ApiService 已连接: " + name);
                             if (!ApiHolder.isReady()) {
-                                // 有些版本 onCreate 先于 onBind 执行，构造 hook 已捕获；
-                                // 兜底：从 service 静态实例反射（不适用），仅记录
                                 LogManager.w(TAG, "[" + pkg + "] 连接成功但 ApiMethodsImpl 未就绪");
+                                startPolling();
                             }
                         }
 
@@ -161,12 +194,19 @@ public final class QQProcessHook {
                         }
                     }, Context.BIND_AUTO_CREATE);
                     LogManager.i(TAG, "[" + pkg + "] 主动 bind ApiService(" + serviceClass + ") -> " + ok);
+                    if (ok && !ApiHolder.isReady()) {
+                        startPolling(); // 兜底轮询，等待构造 hook 捕获实例
+                    }
                 } catch (Throwable t) {
                     LogManager.e(TAG, "[" + pkg + "] bind ApiService 失败", t);
                 }
             }
-        }, 2000);
+        }, 1000);
     }
+
+    // ------------------------------------------------------------------
+    // 广播拦截
+    // ------------------------------------------------------------------
 
     /** 拦截 qqmusicpad:// / qqmusiccar:// 广播中的 action=8（点歌）与 action=20（控制） */
     private static boolean interceptBroadcast(Intent intent) {
@@ -202,7 +242,10 @@ public final class QQProcessHook {
                         LogManager.i(TAG, ">>> 已走内部 API 后台播放（不弹搜索框）");
                         return true;
                     }
-                    LogManager.w(TAG, "voicePlay 未就绪，放行原逻辑");
+                    LogManager.w(TAG, "voicePlay 未就绪，缓存命令待实例就绪后补发");
+                    sPendingQuery = query;
+                    startPolling();
+                    return true; // 消费广播（不弹搜索框），由 pending 兜底
                 }
                 return false;
             }
@@ -222,12 +265,68 @@ public final class QQProcessHook {
                     LogManager.i(TAG, ">>> 已走内部 API 播放控制");
                     return true;
                 }
-                LogManager.w(TAG, "control 未就绪，放行原逻辑");
-                return false;
+                LogManager.w(TAG, "control 未就绪，缓存命令待实例就绪后补发");
+                sPendingCmd = cmd;
+                sPendingExtra = extra;
+                startPolling();
+                return true; // 消费广播，由 pending 兜底
             }
         } catch (Throwable t) {
             LogManager.e(TAG, "拦截 action=" + action + " 异常", t);
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------
+    // pending 补发
+    // ------------------------------------------------------------------
+
+    private static void startPolling() {
+        if (sPolling) {
+            return;
+        }
+        sPolling = true;
+        sPollAttempts = 0;
+        sHandler.postDelayed(sPollRunnable, 500);
+    }
+
+    private static final Runnable sPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (ApiHolder.isReady()) {
+                sPolling = false;
+                maybeFlushPending();
+                return;
+            }
+            sPollAttempts++;
+            if (sPollAttempts < 40) { // 最多等 20 秒
+                sHandler.postDelayed(this, 500);
+            } else {
+                sPolling = false;
+                LogManager.w(TAG, "等待 ApiMethodsImpl 就绪超时（20s），丢弃 pending 命令");
+                sPendingQuery = null;
+                sPendingCmd = -2;
+            }
+        }
+    };
+
+    /** 实例就绪后补发缓存的点歌/控制命令 */
+    private static void maybeFlushPending() {
+        if (!ApiHolder.isReady()) {
+            return;
+        }
+        String query = sPendingQuery;
+        if (query != null) {
+            sPendingQuery = null;
+            LogManager.i(TAG, "[pending] 补发点歌 -> " + query);
+            ApiHolder.voicePlay(query);
+        }
+        int cmd = sPendingCmd;
+        if (cmd != -2) {
+            sPendingCmd = -2;
+            long extra = sPendingExtra;
+            LogManager.i(TAG, "[pending] 补发播放控制 -> cmd=" + cmd + " extra=" + extra);
+            ApiHolder.control(cmd, extra);
+        }
     }
 }

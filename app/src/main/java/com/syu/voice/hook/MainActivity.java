@@ -284,26 +284,52 @@ public class MainActivity extends Activity {
     // 日志
     // ------------------------------------------------------------------
 
-    private File logFile() {
-        // 日志写在模块 App 外部私有目录，车助理（system uid）可写入，模块 App 读取无需权限
+    /** 各进程日志目录（v1.3.1 起 QQ音乐进程日志写它自己的 App 私有目录） */
+    private static final String[] LOG_PKGS = {
+            "com.syu.voice.hook",            // 模块/车助理进程
+            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad 版
+            "com.tencent.qqmusiccar",        // QQ音乐 车机版
+            "com.tencent.qqmusic",           // QQ音乐 手机版
+            "com.netease.cloudmusic.iot",    // 网易云 车机版
+            "com.netease.cloudmusic",        // 网易云 手机版
+    };
+
+    private File logFileFor(String pkg) {
         return new File(Environment.getExternalStorageDirectory(),
-                "Android/data/com.syu.voice.hook/files/logs/fytMusicVoiceInject.log");
+                "Android/data/" + pkg + "/files/logs/fytMusicVoiceInject.log");
     }
 
     private void loadLog() {
         try {
-            File f = logFile();
-            if (!f.exists()) {
+            StringBuilder sb = new StringBuilder();
+            boolean any = false;
+            java.util.List<String> failed = new java.util.ArrayList<String>();
+            for (String pkg : LOG_PKGS) {
+                File f = logFileFor(pkg);
+                if (!f.exists() || f.length() == 0) {
+                    continue;
+                }
+                sb.append("===== ").append(pkg).append(" =====\n");
+                try {
+                    BufferedReader br = new BufferedReader(new FileReader(f));
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        sb.append(line).append('\n');
+                    }
+                    br.close();
+                    any = true;
+                } catch (Throwable t) {
+                    failed.add(pkg + "（无权限）");
+                }
+            }
+            if (!any && failed.isEmpty()) {
                 mLogView.setText("（暂无日志。请先重启车机让模块生效，或触发一次语音指令）");
                 return;
             }
-            StringBuilder sb = new StringBuilder();
-            BufferedReader br = new BufferedReader(new FileReader(f));
-            String line;
-            while ((line = br.readLine()) != null) {
-                sb.append(line).append('\n');
+            if (!failed.isEmpty()) {
+                sb.append("\n[提示] 无法读取: ").append(TextUtils.join(", ", failed))
+                        .append("\n车机 Android 11+ 读取其他 App 私有目录需 root 或「所有文件访问」权限");
             }
-            br.close();
             mLogView.setText(sb.length() == 0 ? "（日志为空）" : sb.toString());
         } catch (Throwable t) {
             mLogView.setText("读取日志失败: " + t.getMessage()
@@ -312,11 +338,14 @@ public class MainActivity extends Activity {
     }
 
     private void clearLog() {
-        File f = logFile();
-        if (f.exists()) {
-            f.delete();
-            Toast.makeText(this, "日志已清空", Toast.LENGTH_SHORT).show();
+        int cleared = 0;
+        for (String pkg : LOG_PKGS) {
+            File f = logFileFor(pkg);
+            if (f.exists() && f.delete()) {
+                cleared++;
+            }
         }
+        Toast.makeText(this, "已清空 " + cleared + " 个日志文件", Toast.LENGTH_SHORT).show();
         mLogView.setText("");
     }
 

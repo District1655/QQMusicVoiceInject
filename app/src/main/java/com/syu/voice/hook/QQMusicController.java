@@ -97,6 +97,8 @@ public final class QQMusicController {
     /** 发送携带 scheme data 的广播，由 BroadcastReceiverCenterForThird 处理（不走 Activity 中转） */
     private void sendSchemeBroadcast(String url, String desc) {
         try {
+            // QQ音乐未运行时先启动它（否则广播无人处理、指令失效）
+            ensureRunning();
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.setPackage(mPkg);
             mContext.sendBroadcast(intent);
@@ -104,5 +106,61 @@ public final class QQMusicController {
         } catch (Throwable t) {
             LogManager.e("QQMusicController", "[" + mScheme + "] " + desc + " 发送失败", t);
         }
+    }
+
+    /**
+     * 确保 QQ音乐在运行：检测不到其进程时，先启动它再操作。
+     * 车助理是系统 uid，getRunningAppProcesses 可枚举全部进程；拿不到列表时
+     * 默认视为已运行，避免误启动打断正在播放的音乐。
+     */
+    private void ensureRunning() {
+        try {
+            if (isPkgRunning(mPkg)) {
+                return;
+            }
+            LogManager.i("QQMusicController", "[" + mPkg + "] 未在运行，先启动…");
+            Intent launch = mContext.getPackageManager().getLaunchIntentForPackage(mPkg);
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                mContext.startActivity(launch);
+                LogManager.i("QQMusicController", "[" + mPkg + "] 已发送启动 Intent");
+            } else {
+                LogManager.w("QQMusicController", "[" + mPkg + "] 无启动 Intent（未安装？）");
+            }
+        } catch (Throwable t) {
+            LogManager.e("QQMusicController", "[" + mPkg + "] 启动失败，继续发广播", t);
+        }
+    }
+
+    /** 检测目标包是否有存活进程（QQ音乐多进程，任一进程存活即视为运行中） */
+    private boolean isPkgRunning(String pkg) {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager)
+                    mContext.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) {
+                return true;
+            }
+            java.util.List<android.app.ActivityManager.RunningAppProcessInfo> procs =
+                    am.getRunningAppProcesses();
+            if (procs == null || procs.isEmpty()) {
+                return true; // 拿不到列表，不误启动
+            }
+            for (android.app.ActivityManager.RunningAppProcessInfo p : procs) {
+                if (pkg.equals(p.processName)) {
+                    return true;
+                }
+                if (p.pkgList != null) {
+                    for (String pp : p.pkgList) {
+                        if (pkg.equals(pp)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            LogManager.e("QQMusicController", "检测进程失败，默认已运行", t);
+            return true;
+        }
+        return false;
     }
 }
