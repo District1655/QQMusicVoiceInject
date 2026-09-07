@@ -24,6 +24,13 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         String pkg = lpparam.packageName;
 
+        // TXZ 语音主服务（com.txznet.txz）：v1.3.2 起 hook 音乐模块 y()，
+        // 确保"上一曲/下一曲/暂停"等控制命令走 MusicTool 代理而不是系统媒体键
+        if ("com.txznet.txz".equals(pkg)) {
+            TXZHook.hook(lpparam.classLoader);
+            return;
+        }
+
         // QQ音乐进程：v1.3.0 后台搜索直接播放（需要用户在 LSPosed 作用域勾选 QQ音乐）
         if (QQProcessHook.isQQMusicPkg(pkg)) {
             QQProcessHook.hook(pkg, lpparam.classLoader);

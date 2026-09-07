@@ -100,9 +100,7 @@ public final class QQMusicToolProxy {
                     case "isPlaying":
                         boolean playing = isPlaying();
                         LogManager.d(TAG, "[" + mPkg + "] isPlaying -> " + playing);
-                        return playing;
-
-                    case "play":
+                        return playing;                    case "play":
                     case "continuePlay":
                         LogManager.i(TAG, "[" + mPkg + "] 语音指令: " + name);
                         if (useQQController() && qq() != null) {
@@ -110,6 +108,7 @@ public final class QQMusicToolProxy {
                         } else {
                             transport().play();
                         }
+                        notifyStatus(1); // STATE_START_PLAY
                         return null;
 
                     case "pause":
@@ -119,6 +118,7 @@ public final class QQMusicToolProxy {
                         } else {
                             transport().pause();
                         }
+                        notifyStatus(2); // STATE_PAUSE_PLAY
                         return null;
 
                     case "next":
@@ -129,6 +129,7 @@ public final class QQMusicToolProxy {
                         } else {
                             transport().skipToNext();
                         }
+                        notifyStatus(4); // STATE_SONG_CHANGE
                         return null;
 
                     case "prev":
@@ -138,6 +139,7 @@ public final class QQMusicToolProxy {
                         } else {
                             transport().skipToPrevious();
                         }
+                        notifyStatus(4); // STATE_SONG_CHANGE
                         return null;
 
                     case "exit":
@@ -167,6 +169,7 @@ public final class QQMusicToolProxy {
                         } else {
                             playMusic(args != null && args.length > 0 ? args[0] : null);
                         }
+                        notifyStatus(1); // STATE_START_PLAY
                         return null;
 
                     case "getCurrentMusicModel":
@@ -283,9 +286,14 @@ public final class QQMusicToolProxy {
         }
 
         private boolean isPlaying() {
+            // v1.3.2：QQ音乐HD 不暴露标准 MediaSession，直接查 MediaSession 永远 false，
+            // 会导致 TXZ 判定"无播放上下文"并退出音乐场景，
+            // 随后"上一曲/下一曲/暂停"等控制指令全被语义层拒绝（"没听清"）。
+            // 改为 MediaSession 拿不到时保底返回 true，维持 TXZ 音乐场景激活。
             MediaController c = controller();
             if (c == null) {
-                return false;
+                LogManager.d(TAG, "[" + mPkg + "] isPlaying: 无 MediaSession，保底 true（维持音乐场景）");
+                return true;
             }
             PlaybackState ps = c.getPlaybackState();
             return ps != null
@@ -363,17 +371,20 @@ public final class QQMusicToolProxy {
             return ContextHolder.get();
         }
 
-        // 状态上报（可选增强）：播放状态变化时通知宿主刷新 UI
-        @SuppressWarnings("unused")
-        private void notifyStatusChanged() {
+        // 状态上报：播放状态变化时通知 TXZ（MusicToolStatusListener.onStatusChange(int)），
+        // 让 TXZ 音乐场景保持激活，否则"上一曲/下一曲/暂停"会被语义层过滤。
+        // 常量：1=START_PLAY 2=PAUSE_PLAY 3=BUFFERING 4=SONG_CHANGE
+        private void notifyStatus(int state) {
             Object l = mStatusListener;
             if (l == null) {
+                LogManager.d(TAG, "[" + mPkg + "] 状态上报跳过（无 listener）state=" + state);
                 return;
             }
             try {
-                XposedHelpers.callMethod(l, "onStatusChange");
-                LogManager.d(TAG, "[" + mPkg + "] 状态上报 onStatusChange");
-            } catch (Throwable ignored) {
+                XposedHelpers.callMethod(l, "onStatusChange", state);
+                LogManager.d(TAG, "[" + mPkg + "] 状态上报 onStatusChange(" + state + ")");
+            } catch (Throwable t) {
+                LogManager.e(TAG, "[" + mPkg + "] 状态上报失败 state=" + state + ": " + t.getMessage(), t);
             }
         }
     }

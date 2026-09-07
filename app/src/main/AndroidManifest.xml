@@ -44,7 +44,7 @@
             android:value="82" />
         <meta-data
             android:name="xposedscope"
-            android:value="com.syu.voice,com.tencent.qqmusiccar,com.tencent.qqmusicpad,com.tencent.qqmusic" />
+            android:value="com.syu.voice,com.tencent.qqmusiccar,com.tencent.qqmusicpad,com.tencent.qqmusic,com.txznet.txz" />
     </application>
 
 </manifest>
