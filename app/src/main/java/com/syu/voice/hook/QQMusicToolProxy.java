@@ -232,7 +232,9 @@ public final class QQMusicToolProxy {
                     }
                     query.append(((String[]) artistArr)[0]);
                 }
-                return query.toString();
+                // v1.3.3：识别纠错（歌手/歌名同音错字 -> 正确词），防止错词直接进搜索
+                String raw = query.toString();
+                return SongCorrector.correctQuery(raw);
             } catch (Throwable t) {
                 return "";
             }

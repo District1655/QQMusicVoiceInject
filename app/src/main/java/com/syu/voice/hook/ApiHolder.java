@@ -80,10 +80,15 @@ public final class ApiHolder {
             return false;
         }
         try {
+            // v1.3.3：入口统一过识别纠错（覆盖广播/其他路径进入的 query）
+            String fixed = SongCorrector.correctQuery(query);
+            if (!fixed.equals(query)) {
+                LogManager.i(TAG, "voicePlay 入口纠错: " + query + " -> " + fixed);
+            }
             Object callback = makeCallback("voicePlay");
             List<String> slotList = new ArrayList<String>();
-            XposedHelpers.callMethod(api, "voicePlay", query, slotList, callback);
-            LogManager.i(TAG, "voicePlay 已发出 -> query=" + query);
+            XposedHelpers.callMethod(api, "voicePlay", fixed, slotList, callback);
+            LogManager.i(TAG, "voicePlay 已发出 -> query=" + fixed);
             return true;
         } catch (Throwable t) {
             LogManager.e(TAG, "voicePlay 调用失败: " + query, t);
