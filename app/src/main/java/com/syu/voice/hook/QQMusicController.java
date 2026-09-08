@@ -71,7 +71,14 @@ public final class QQMusicController {
         sendSchemeBroadcast(url, "controlPlay(" + ctrl + "," + extra + ")");
     }
 
-    /** 点歌：搜索关键词并直接播放。search_key 必须是 Base64 编码，否则 QQ音乐解码失败输入框为空 */
+    /**
+     * 点歌：搜索关键词并直接播放。search_key 必须是 Base64 编码，否则 QQ音乐解码失败输入框为空。
+     * ★ Base64 拼进 URL query 前必须 URLEncoder：标准 Base64 含 '+' '/' '='，
+     *   query string 按 form-urlencoded 解析时 '+' 会被解码成空格（Android Uri.getQueryParameter
+     *   与 URLDecoder 均如此），导致 Base64 解码出乱码、搜索播错歌。
+     *   实测："毛不易" 的 b64=5q+b5LiN5piT（含 '+'）被解析成 "5q b5LiN5piT" → 乱码；
+     *   "周杰伦" 的 b64=5ZGo5p2w5Lym（不含 +/=）恰好正常——与歌手名气无关。
+     */
     public void searchAndPlay(String keyword) {
         if (keyword == null || keyword.trim().isEmpty()) {
             controlPlay(CTRL_PLAY, 100);
@@ -83,9 +90,17 @@ public final class QQMusicController {
         } catch (Throwable t) {
             b64 = Base64.encodeToString(keyword.getBytes(), Base64.NO_WRAP);
         }
+        // URL 编码：'+'→%2B、'/'→%2F、'='→%3D；接收端（模块 getQueryParameter 与
+        // QQ音乐原生 receiver 的 URL 解码）都会还原为标准 Base64 字母
+        String encB64 = b64;
+        try {
+            encB64 = java.net.URLEncoder.encode(b64, "UTF-8");
+        } catch (Throwable ignored) {
+        }
         String url = mScheme + "://?action=" + ACTION_SEARCH_PLAY
-                + "&search_key=" + b64 + "&m1=true";
-        sendSchemeBroadcast(url, "searchAndPlay(" + keyword + ") b64=" + b64);
+                + "&search_key=" + encB64 + "&m1=true";
+        sendSchemeBroadcast(url, "searchAndPlay(" + keyword + ") b64=" + b64
+                + " enc=" + encB64);
     }
 
     /** 打开 QQ音乐 */

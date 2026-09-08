@@ -14,10 +14,11 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > 1.3.4~1.4.7 全部废弃，本地 release 与 GitHub 历史均已删除。
 > v1.5.0 = v1.3.3 主路径 + 定向移植回 v1.4.4 的语义槽修复（KNOWN_SINGERS + buildSlots，
 > 解决回退后"播放毛不易的歌"被 QQ NLU 猜错播错歌的问题）。
-> v1.6.x = 日志能力补齐：一键导出全部作用域进程日志（root 兜底读分区存储），
-> 导出结果三态弹窗（成功/不完整/失败），失败原因与 Magisk 授权指引明确可见。
+> v1.6.x = 日志能力补齐（一键导出 + 结果三态弹窗）；
+> v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
+> `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.6.1）
+## 支持列表（v1.6.2）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -80,11 +81,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10601
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10602
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.6.1
+        └── java/com/syu/voice/hook/   # v1.6.2
             ├── MainHook.java         # Xposed 入口（进程分流）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发）
@@ -146,7 +147,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.6.1 | 修复导出日志失败/残缺无法识别：结果三态化弹窗（✅成功/⚠️不完整缺root/❌失败）+ Magisk 授权指引，无 root 不再"假成功"（当前版本） |
+| v1.6.2 | 修复点歌 Base64 未 URL 编码：关键词 Base64 含 `+`/`/` 时（如"毛不易"→`5q+b5LiN5piT`）`+` 被解析为空格导致解码乱码、播错歌；周杰伦等不含特殊字符的恰好正常（当前版本） |
+| v1.6.1 | 修复导出日志失败/残缺无法识别：结果三态化弹窗（✅成功/⚠️不完整缺root/❌失败）+ Magisk 授权指引，无 root 不再"假成功" |
 | v1.6.0 | 日志一键导出：zip 打包全部作用域进程日志（含轮转）+ logcat + info.txt 到 Download；读取/清理 root 兜底，修复 Android 10 分区存储下看不到 QQ音乐HD 等进程日志 |
 | v1.5.0 | 定向移植回 v1.4.4 语义槽修复（KNOWN_SINGERS + buildSlots），voicePlay 携带 Singer/Track 槽，修复回退后"毛不易"等歌手点歌被 QQ NLU 猜错 |
 | v1.3.3 | 点歌识别纠错层 SongCorrector——歌手/歌名同音错字自动纠正（毛不易/像我这样的人等内置字典），extractQuery 与 voicePlay 双入口，命中记日志便于扩充 |
