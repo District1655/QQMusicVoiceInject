@@ -475,46 +475,76 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
-    // 一键导出完整日志（v1.6.0）
+    // 一键导出完整日志（v1.6.0；v1.6.1 结果三态化——失败/残缺明确可识别）
     // ------------------------------------------------------------------
+
+    /** 导出结果：成功 / 不完整（缺 root 或作用域日志）/ 失败 三态 */
+    private static final class ExportResult {
+        File zipFile;            // 最终发布的 zip；null=彻底失败
+        boolean rootOk;          // 是否拿到 root
+        String rootError;        // root 失败原因（可空）
+        final List<String> foundPkgs = new ArrayList<String>(); // 读到日志的包名
+        boolean logcatOk;        // logcat 是否入包
+        String fatalError;       // 致命错误（zip 未生成/一个进程日志都没有）
+    }
 
     /**
      * 导出模块 + 全部作用域进程的完整日志：
      *   <pkg>/fytMusicVoiceInject.log[.1~.3]  各进程文件日志（直读 + root 兜底）
      *   logcat/logcat_filtered.txt            logcat 关键行（fytMusic/Xposed/AndroidRuntime）
-     *   logcat/logcat_recent.txt               logcat 最近 5000 行（全量，root 时）
-     *   info.txt                               版本/环境/各进程文件清单
+     *   logcat/logcat_recent.txt              logcat 最近 5000 行（root 时）
+     *   info.txt                              版本/环境/各进程文件清单
      * 有 root：zip 落 /sdcard/Download/（su cp + chmod）；
-     * 无 root：zip 落模块自己外部目录（只含直读能拿到的部分）。
+     * 无 root：zip 落模块自己外部目录，且结果对话框明确警告"导出不完整"。
      */
     private void exportLogs() {
-        Toast.makeText(this, "正在导出…（后台执行，完成后提示路径）", Toast.LENGTH_SHORT).show();
+        // 每次导出重新探测 root（用户可能上次拒绝、刚去 Magisk 完成授权）
+        mRootCache = null;
+        Toast.makeText(this, "正在导出…首次使用会弹出 Magisk 授权，请点「允许」",
+                Toast.LENGTH_LONG).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                String result;
+                final ExportResult r;
                 try {
-                    final File out = doExportLogs();
-                    result = out != null
-                            ? "已导出: " + out.getAbsolutePath()
-                            : "导出完成，但未能生成文件";
+                    r = doExportLogs();
                 } catch (Throwable t) {
-                    result = "导出失败: " + t.getMessage();
+                    ExportResult e = new ExportResult();
+                    e.fatalError = t.getClass().getSimpleName() + ": "
+                            + (t.getMessage() == null ? t.toString() : t.getMessage());
+                    showResultOnUi(e);
+                    return;
                 }
-                final String msg = result;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        mStatusView.setText("状态：" + msg);
-                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
-                    }
-                });
+                showResultOnUi(r);
             }
         }).start();
     }
 
-    private File doExportLogs() throws Exception {
-        boolean root = hasRoot();
+    private void showResultOnUi(final ExportResult r) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                showExportResult(r);
+            }
+        });
+    }
+
+    private ExportResult doExportLogs() {
+        ExportResult r = new ExportResult();
+
+        // 1) root 探测（触发 Magisk 授权弹窗；后台线程阻塞等待用户响应，不卡 UI）
+        try {
+            byte[] id = suRun("id");
+            r.rootOk = new String(id, "UTF-8").contains("uid=0");
+            if (!r.rootOk) {
+                r.rootError = "su id 未返回 uid=0";
+            }
+        } catch (Throwable t) {
+            r.rootOk = false;
+            r.rootError = t.getMessage() == null ? t.toString() : t.getMessage();
+        }
+        mRootCache = r.rootOk; // readLogBestEffort 据此决定是否走 root 兜底
+
         String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         String zipName = "fytMusicVoiceInject_logs_" + stamp + ".zip";
 
@@ -528,85 +558,160 @@ public class MainActivity extends Activity {
         info.add("模块版本: v" + BuildConfig.VERSION_NAME + " (code " + BuildConfig.VERSION_CODE + ")");
         info.add("导出时间: " + stamp);
         info.add("Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
-        info.add("Root: " + (root ? "是" : "否（仅直读可获取的日志）"));
+        info.add("Root: " + (r.rootOk ? "是" : "否（" + r.rootError + "）"));
         info.add("");
         info.add("各进程日志文件:");
 
-        ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tmpZip));
         try {
-            // 1) 各作用域进程的文件日志（主文件 + 轮转 .1/.2/.3）
-            for (String pkg : SCOPE_PKGS) {
-                StringBuilder pkgLine = new StringBuilder("  ").append(pkg).append(':');
-                boolean hasAny = false;
-                for (String suffix : LOG_SUFFIXES) {
-                    byte[] data = readLogBestEffort(pkg, suffix);
-                    if (data == null) {
-                        continue;
+            ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tmpZip));
+            try {
+                // 2) 各作用域进程的文件日志（主文件 + 轮转 .1/.2/.3）
+                for (String pkg : SCOPE_PKGS) {
+                    StringBuilder pkgLine = new StringBuilder("  ").append(pkg).append(':');
+                    boolean hasAny = false;
+                    for (String suffix : LOG_SUFFIXES) {
+                        byte[] data = readLogBestEffort(pkg, suffix);
+                        if (data == null) {
+                            continue;
+                        }
+                        putZipEntry(zos, pkg + "/" + LOG_NAME + suffix, data);
+                        pkgLine.append(" ").append(LOG_NAME + suffix)
+                                .append("(").append(data.length).append("B)");
+                        hasAny = true;
                     }
-                    putZipEntry(zos, pkg + "/" + LOG_NAME + suffix, data);
-                    pkgLine.append(" ").append(LOG_NAME + suffix)
-                            .append("(").append(data.length).append("B)");
-                    hasAny = true;
+                    if (hasAny) {
+                        r.foundPkgs.add(pkg);
+                    } else {
+                        pkgLine.append(" 未找到（未安装/未注入/未产生日志或无 root 读不到）");
+                    }
+                    info.add(pkgLine.toString());
                 }
-                if (!hasAny) {
-                    pkgLine.append(" 未找到（未安装/未注入或未产生日志）");
-                }
-                info.add(pkgLine.toString());
-            }
 
-            // 2) logcat
-            byte[] logcatAll = null;
-            if (root) {
-                try {
-                    logcatAll = suRun("logcat -d -t 5000");
-                } catch (Throwable ignored) {
+                // 3) logcat
+                byte[] logcatAll = null;
+                if (r.rootOk) {
+                    try {
+                        logcatAll = suRun("logcat -d -t 5000");
+                    } catch (Throwable t) {
+                        info.add("logcat root 读取失败: " + t.getMessage());
+                    }
                 }
-            }
-            if (logcatAll == null) {
-                // 无 root：尝试直读（部分车机 ROM 放开 logcat 权限），只取模块 tag
-                try {
-                    Process p = Runtime.getRuntime().exec(
-                            new String[]{"logcat", "-d", "-t", "3000", "-s", "fytMusicVoice"});
-                    logcatAll = readAll(p.getInputStream());
-                    p.waitFor();
-                } catch (Throwable ignored) {
+                if (logcatAll == null) {
+                    // 无 root：尝试直读（部分车机 ROM 放开 logcat 权限），只取模块 tag
+                    try {
+                        Process p = Runtime.getRuntime().exec(
+                                new String[]{"logcat", "-d", "-t", "3000", "-s", "fytMusicVoice"});
+                        logcatAll = readAll(p.getInputStream());
+                        p.waitFor();
+                    } catch (Throwable t) {
+                        info.add("logcat 直读失败: " + t.getMessage());
+                    }
                 }
-            }
-            if (logcatAll != null && logcatAll.length > 0) {
-                putZipEntry(zos, "logcat/logcat_recent.txt", logcatAll);
-                putZipEntry(zos, "logcat/logcat_filtered.txt", filterLines(logcatAll));
-            } else {
-                info.add("");
-                info.add("logcat 不可读（无 root 且 ROM 限制）");
-            }
+                r.logcatOk = logcatAll != null && logcatAll.length > 0;
+                if (r.logcatOk) {
+                    putZipEntry(zos, "logcat/logcat_recent.txt", logcatAll);
+                    putZipEntry(zos, "logcat/logcat_filtered.txt", filterLines(logcatAll));
+                } else {
+                    info.add("logcat 不可读（无 root 且 ROM 限制）");
+                }
 
-            // 3) info.txt
-            putZipEntry(zos, "info.txt",
-                    TextUtils.join("\n", info).getBytes("UTF-8"));
-        } finally {
-            zos.close();
+                // 4) info.txt
+                putZipEntry(zos, "info.txt",
+                        TextUtils.join("\n", info).getBytes("UTF-8"));
+            } finally {
+                zos.close();
+            }
+        } catch (Throwable t) {
+            r.fatalError = "写 zip 失败: " + t.getMessage();
+            tmpZip.delete();
+            return r;
         }
 
-        // 4) 发布：有 root 放 /sdcard/Download/（用户最易取）；否则放模块自己外部目录
-        if (tmpZip.length() == 0) {
-            return null;
+        // 5) 一个进程日志都没拿到 = 失败（zip 里只有 info.txt，无诊断价值）
+        if (r.foundPkgs.isEmpty()) {
+            tmpZip.delete();
+            r.fatalError = "没有收集到任何进程的日志。"
+                    + (r.rootOk ? "" : "主因：未获取 root 权限，读不到其他 App 的日志目录。");
+            return r;
         }
-        if (root) {
+
+        // 6) 发布 zip：有 root 由 su cp 到 /sdcard/Download/；否则落模块自己外部目录
+        if (r.rootOk) {
             try {
                 String dst = "/sdcard/Download/" + zipName;
-                suRun("cp " + tmpZip.getAbsolutePath() + " " + dst
-                        + " && chmod 644 " + dst);
+                suRun("cp " + tmpZip.getAbsolutePath() + " " + dst + " && chmod 644 " + dst);
                 File out = new File(dst);
                 if (out.exists() && out.length() > 0) {
-                    return out;
+                    r.zipFile = out;
                 }
             } catch (Throwable t) {
-                LogManager.w("export", "root 发布到 Download 失败: " + t.getMessage());
+                r.rootError = "发布到 Download 失败: " + t.getMessage();
             }
         }
-        File fallback = new File(getExternalFilesDir(null), zipName);
-        copyFile(tmpZip, fallback);
-        return fallback;
+        if (r.zipFile == null) {
+            try {
+                File fallback = new File(getExternalFilesDir(null), zipName);
+                copyFile(tmpZip, fallback);
+                r.zipFile = fallback;
+            } catch (Throwable t) {
+                r.fatalError = "zip 发布失败: " + t.getMessage();
+            }
+        }
+        return r;
+    }
+
+    /**
+     * 结果对话框（v1.6.1）：必须点「确定」关闭，不会像 Toast 一闪而过。
+     * 三态：✅ 成功 / ⚠️ 导出不完整（缺 root 或作用域日志）/ ❌ 失败，均给出可操作建议。
+     */
+    private void showExportResult(ExportResult r) {
+        boolean failed = r.zipFile == null || r.fatalError != null;
+        boolean hasScopeLog = false;
+        for (String pkg : r.foundPkgs) {
+            if (!"com.syu.voice.hook".equals(pkg)) {
+                hasScopeLog = true; // 7 个作用域宿主包任一拿到日志
+                break;
+            }
+        }
+        boolean partial = !failed && (!r.rootOk || !hasScopeLog);
+
+        String title;
+        StringBuilder msg = new StringBuilder();
+        if (failed) {
+            title = "❌ 导出失败";
+            msg.append(r.fatalError == null ? "未知错误" : r.fatalError);
+            msg.append("\n\n请重试；若持续失败：\n")
+               .append("1. 打开 Magisk →「超级用户」，允许「fytMusicVoiceInject」获取 root；\n")
+               .append("2. 确认车机已 root；\n")
+               .append("3. 截图本对话框发给开发者。");
+        } else {
+            msg.append("日志包路径：\n").append(r.zipFile.getAbsolutePath()).append("\n\n");
+            msg.append("收集到进程日志（").append(r.foundPkgs.size()).append("）：\n")
+               .append(TextUtils.join("、", r.foundPkgs)).append("\n\n");
+            msg.append("logcat：").append(r.logcatOk ? "已包含" : "未获取").append('\n');
+            msg.append("root 权限：").append(r.rootOk ? "已授权" : "未获取").append('\n');
+
+            if (partial) {
+                title = "⚠️ 导出不完整";
+                msg.append("\n⚠ 未获取 root 权限，读不到 QQ音乐HD/车助理等其他 App 的日志目录")
+                   .append("（Android 10+ 分区存储限制），本日志包缺少排查所需的作用域进程日志。\n\n")
+                   .append("解决办法：\n")
+                   .append("1. 打开 Magisk →「超级用户」列表，允许「fytMusicVoiceInject」获取 root；\n")
+                   .append("2. 重新点「导出完整日志」（授权弹窗会再次出现，点「允许」）。");
+            } else {
+                title = "✅ 导出成功";
+                msg.append("\n请把该 zip 取出（/sdcard/Download/ 或 MT 管理器）发送给开发者排查。");
+            }
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(msg.toString())
+                .setPositiveButton("确定", null)
+                .show();
+        mStatusView.setText("状态：" + title + " → "
+                + (r.zipFile != null ? r.zipFile.getAbsolutePath()
+                                     : (r.fatalError == null ? "" : r.fatalError)));
     }
 
     private static void putZipEntry(ZipOutputStream zos, String name, byte[] data) throws Exception {
