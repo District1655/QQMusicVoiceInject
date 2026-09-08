@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.6.2）
+## 支持列表（v1.6.3）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -81,11 +81,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10602
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10603
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.6.2
+        └── java/com/syu/voice/hook/   # v1.6.3
             ├── MainHook.java         # Xposed 入口（进程分流）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发）
@@ -147,7 +147,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.6.2 | 修复点歌 Base64 未 URL 编码：关键词 Base64 含 `+`/`/` 时（如"毛不易"→`5q+b5LiN5piT`）`+` 被解析为空格导致解码乱码、播错歌；周杰伦等不含特殊字符的恰好正常（当前版本） |
+| v1.6.3 | 可观测性修复：logcat 导出 5000→30 万行（车机日志 10 秒滚完导致拦截证据丢失）；播放器进程文件日志不落盘修复（Application hook 无 try/catch 致 init 不执行）；解码端自愈（旧广播空格还原 '+'）；导出补 /data/media/0 等候选路径（当前版本） |
+| v1.6.2 | 修复点歌 Base64 未 URL 编码：关键词 Base64 含 `+`/`/` 时（如"毛不易"→`5q+b5LiN5piT`）`+` 被解析为空格导致解码乱码、播错歌；周杰伦等不含特殊字符的恰好正常 |
 | v1.6.1 | 修复导出日志失败/残缺无法识别：结果三态化弹窗（✅成功/⚠️不完整缺root/❌失败）+ Magisk 授权指引，无 root 不再"假成功" |
 | v1.6.0 | 日志一键导出：zip 打包全部作用域进程日志（含轮转）+ logcat + info.txt 到 Download；读取/清理 root 兜底，修复 Android 10 分区存储下看不到 QQ音乐HD 等进程日志 |
 | v1.5.0 | 定向移植回 v1.4.4 语义槽修复（KNOWN_SINGERS + buildSlots），voicePlay 携带 Singer/Track 槽，修复回退后"毛不易"等歌手点歌被 QQ NLU 猜错 |

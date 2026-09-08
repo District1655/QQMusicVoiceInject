@@ -135,28 +135,35 @@ public final class QQProcessHook {
         }
 
         // 5) Application.onCreate：初始化日志 + 主动 bind ApiService 确保实例存在
-        XposedHelpers.findAndHookMethod("android.app.Application", cl,
-                "onCreate", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        final Context app = (Context) param.thisObject;
-                        ContextHolder.set(app);
-                        LogManager.init(app);
-                        try {
-                            Context moduleCtx = app.createPackageContext(
-                                    "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
-                            boolean logEnabled = moduleCtx.getSharedPreferences(
-                                    "fyt_music_voice_prefs", Context.MODE_PRIVATE)
-                                    .getBoolean("log_enabled", true);
-                            LogManager.setEnabled(logEnabled);
-                        } catch (Throwable t) {
-                            LogManager.w(TAG, "[" + pkg + "] 读取日志开关失败，默认开启");
+        //    （包 try/catch：此 hook 失败不能影响 1~4 已注册的广播拦截；
+        //      且失败必须落 logcat——否则播放器进程只有拦截日志、没有文件日志，极难排查）
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+                    "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            final Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            try {
+                                Context moduleCtx = app.createPackageContext(
+                                        "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
+                                boolean logEnabled = moduleCtx.getSharedPreferences(
+                                        "fyt_music_voice_prefs", Context.MODE_PRIVATE)
+                                        .getBoolean("log_enabled", true);
+                                LogManager.setEnabled(logEnabled);
+                            } catch (Throwable t) {
+                                LogManager.w(TAG, "[" + pkg + "] 读取日志开关失败，默认开启");
+                            }
+                            LogManager.i(TAG, "[" + pkg + "] 模块加载（QQ音乐进程）v"
+                                    + BuildConfig.VERSION_NAME + " 日志文件="
+                                    + LogManager.getLogFile());
+                            ensureApiService(app, pkg);
                         }
-                        LogManager.i(TAG, "[" + pkg + "] 模块加载（QQ音乐进程）v"
-                                + BuildConfig.VERSION_NAME);
-                        ensureApiService(app, pkg);
-                    }
-                });
+                    });
+        } catch (Throwable t) {
+            LogManager.e(TAG, "[" + pkg + "] hook Application.onCreate 失败（文件日志不可用）", t);
+        }
     }
 
     /** 从 QQMusicApiService 实例反射取 e.e 得到 ApiMethodsImpl */

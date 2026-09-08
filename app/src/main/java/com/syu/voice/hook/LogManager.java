@@ -54,7 +54,7 @@ public final class LogManager {
         try {
             File dir = null;
             // 优先写"本进程所属 App"的外部私有目录：
-            //   车助理进程 -> /sdcard/Android/data/com.syu.voice.hook/files/logs
+            //   车助理进程 -> /sdcard/Android/data/com.syu.voice/files/logs
             //   QQ音乐进程 -> /sdcard/Android/data/com.tencent.qqmusicpad/files/logs
             if (context != null) {
                 try {
@@ -62,12 +62,24 @@ public final class LogManager {
                 } catch (Throwable ignored) {
                 }
             }
+            File fallbackBase = context != null ? context.getFilesDir()
+                    : Environment.getExternalStorageDirectory();
             if (dir == null) {
-                File base = Environment.getExternalStorageDirectory();
-                dir = new File(base, LOG_DIR);
+                dir = new File(fallbackBase, "logs");
             }
-            if (!dir.exists() && !dir.mkdirs()) {
-                dir = context != null ? context.getFilesDir() : dir;
+            if (dir != null && (!dir.exists() && !dir.mkdirs())) {
+                // 外部目录创建失败：退回 App 内部私有目录 <filesDir>/logs
+                if (context != null) {
+                    dir = new File(context.getFilesDir(), "logs");
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                }
+            }
+            // 最终校验：目录不可用则退回内部 files 根目录（导出端有该候选路径）
+            if (dir == null || !dir.isDirectory()) {
+                dir = context != null ? context.getFilesDir()
+                        : new File(Environment.getExternalStorageDirectory(), LOG_DIR);
             }
             sLogFile = new File(dir, LOG_NAME);
             write("==== 日志启动 " + stamp() + " (pid=" + android.os.Process.myPid() + ") ====");

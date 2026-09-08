@@ -185,7 +185,15 @@ public final class ApiHolder {
         }
     }
 
-    /** 解析广播里的 search_key：优先 Base64（URL_SAFE/标准），失败按明文处理 */
+    /**
+     * 解析广播里的 search_key。发送端（v1.6.2+）= 标准 Base64.NO_WRAP 再 URLEncoder，
+     * getQueryParameter 后拿到的就是标准 Base64（含 '+' '/' '='）。
+     * 尝试顺序：
+     *   1) 标准 Base64（当前发送端格式）
+     *   2) 空格还原为 '+' 后标准解码（兼容 v1.6.2 以前旧模块：URL 里 '+' 被 form-urlencoded 解析成空格）
+     *   3) URL_SAFE Base64
+     *   4) 均失败 → 视为明文
+     */
     public static String decodeSearchKey(String key) {
         if (key == null) {
             return null;
@@ -194,17 +202,28 @@ public final class ApiHolder {
         if (trimmed.isEmpty()) {
             return "";
         }
-        // 尝试 URL_SAFE Base64（新模块使用）
-        String decoded = tryBase64(trimmed, Base64.URL_SAFE | Base64.NO_WRAP);
-        if (decoded != null) {
-            return decoded;
+        String decoded;
+        // 1) 含空格优先自愈：旧版（v1.6.2 前）广播里 '+' 被 form-urlencoded 解析成空格，
+        //    base64 字母表不含空格——出现空格必是 '+' 被误解析，先还原再标准解码。
+        //    （注意：Android Base64.decode 会直接跳过空格解出乱码，所以必须先于直接解码尝试）
+        if (trimmed.indexOf(' ') >= 0) {
+            decoded = tryBase64(trimmed.replace(' ', '+'), Base64.NO_WRAP);
+            if (decoded != null) {
+                LogManager.i(TAG, "search_key 含空格，按旧版 URL 解析残留还原 '+' 后解码成功");
+                return decoded;
+            }
         }
-        // 尝试标准 Base64（兼容旧模块）
+        // 2) 标准 Base64（v1.6.2+ 发送端格式：NO_WRAP 再 URLEncoder，getQueryParameter 后即标准 b64）
         decoded = tryBase64(trimmed, Base64.NO_WRAP);
         if (decoded != null) {
             return decoded;
         }
-        // 无法解码 -> 视为明文
+        // 3) URL_SAFE Base64
+        decoded = tryBase64(trimmed, Base64.URL_SAFE | Base64.NO_WRAP);
+        if (decoded != null) {
+            return decoded;
+        }
+        // 4) 无法解码 -> 视为明文
         return trimmed;
     }
 

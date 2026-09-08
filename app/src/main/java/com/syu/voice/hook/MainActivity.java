@@ -366,12 +366,16 @@ public class MainActivity extends Activity {
         return bos.toByteArray();
     }
 
-    /** 某包的候选日志目录：sdcard 外部私有目录 + /data/data 内部私有目录（fallback） */
+    /** 某包的候选日志路径：sdcard 外部私有目录 + /data/media（root 绕过 FUSE）+ /data/data 内部私有目录（fallback） */
     private static List<File> logFileCandidates(String pkg, String suffix) {
         List<File> files = new ArrayList<File>();
         String name = LOG_NAME + suffix;
         files.add(new File("/sdcard/Android/data/" + pkg + "/files/logs/" + name));
+        // root 走 /data/media/0 绕过 FUSE（部分 ROM 下 root 通过 /sdcard FUSE 访问 Android/data 仍被拒）
+        files.add(new File("/data/media/0/Android/data/" + pkg + "/files/logs/" + name));
         files.add(new File("/data/data/" + pkg + "/files/logs/" + name));
+        // LogManager 旧版/异常兜底可能直接落在内部 files 根目录（无 logs 子目录）
+        files.add(new File("/data/data/" + pkg + "/files/" + name));
         return files;
     }
 
@@ -492,7 +496,7 @@ public class MainActivity extends Activity {
      * 导出模块 + 全部作用域进程的完整日志：
      *   <pkg>/fytMusicVoiceInject.log[.1~.3]  各进程文件日志（直读 + root 兜底）
      *   logcat/logcat_filtered.txt            logcat 关键行（fytMusic/Xposed/AndroidRuntime）
-     *   logcat/logcat_recent.txt              logcat 最近 5000 行（root 时）
+     *   logcat/logcat_recent.txt              logcat 最近 30 万行（root 时，车机日志量大，覆盖足够时间窗）
      *   info.txt                              版本/环境/各进程文件清单
      * 有 root：zip 落 /sdcard/Download/（su cp + chmod）；
      * 无 root：zip 落模块自己外部目录，且结果对话框明确警告"导出不完整"。
@@ -591,7 +595,7 @@ public class MainActivity extends Activity {
                 byte[] logcatAll = null;
                 if (r.rootOk) {
                     try {
-                        logcatAll = suRun("logcat -d -t 5000");
+                        logcatAll = suRun("logcat -d -t 300000");
                     } catch (Throwable t) {
                         info.add("logcat root 读取失败: " + t.getMessage());
                     }
@@ -720,7 +724,7 @@ public class MainActivity extends Activity {
         zos.closeEntry();
     }
 
-    /** 从 logcat 字节流中过滤模块相关行（fytMusic / Xposed / AndroidRuntime，忽略大小写） */
+    /** 从 logcat 字节流中过滤模块相关行（fytMusic / Xposed / LSPosed / AndroidRuntime，忽略大小写） */
     private static byte[] filterLines(byte[] logcat) {
         try {
             String[] lines = new String(logcat, "UTF-8").split("\n");
@@ -728,7 +732,7 @@ public class MainActivity extends Activity {
             for (String line : lines) {
                 String lower = line.toLowerCase(Locale.US);
                 if (lower.contains("fytmusic") || lower.contains("xposed")
-                        || lower.contains("androidruntime")) {
+                        || lower.contains("lsposed") || lower.contains("androidruntime")) {
                     sb.append(line).append('\n');
                 }
             }
