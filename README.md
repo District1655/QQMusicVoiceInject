@@ -8,7 +8,12 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 
 本项目以 **MIT 许可证** 开源（见 LICENSE），仅供个人学习研究使用。
 
-## 支持列表（v1.3.2）
+> **⚠ 回退说明（2026-09-08）**：v1.3.4~v1.4.7 的 search 点歌链路（search+playSongMidAtIndex）
+> 在车机上实测不稳定（QQ 的 search 走网络 OpenApiSDK，无网/慢网超时 15s；整体点歌表现劣于
+> v1.3.3），**项目已整体回退到 v1.3.3**（点歌主路径 = QQ 官方 AIDL oicePlay + 识别纠错层）。
+> 1.3.4~1.4.7 全部废弃，本地 release 与 GitHub 历史均已删除。
+
+## 支持列表（v1.3.3）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -53,6 +58,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 - **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 适配 PlayerService 绑定状态）
 - **自动拉起**：QQ音乐未运行时先启动再操作（v1.3.1）
 - **播放状态上报**：isPlaying 保底 true + onStatusChange 主动上报，维持 TXZ 音乐场景（v1.3.2）
+- **点歌识别纠错**：语音识别的歌手/歌名同音错字自动纠正后再点歌（v1.3.3，SongCorrector 内置字典可扩充）
 - **运行日志**：Logcat + 文件双写，各进程独立目录
   - 车助理进程：`/sdcard/Android/data/com.syu.voice.hook/files/logs/fytMusicVoiceInject.log`
   - QQ音乐进程：`/sdcard/Android/data/<对应包名>/files/logs/fytMusicVoiceInject.log`
@@ -70,7 +76,7 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10302
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10303
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
@@ -136,6 +142,7 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
+| v1.3.3 | 点歌识别纠错层 SongCorrector——歌手/歌名同音错字自动纠正（毛不易/像我这样的人等内置字典），extractQuery 与 voicePlay 双入口，命中记日志便于扩充（当前版本） |
 | v1.3.2 | TXZ 主服务命令路由适配；isPlaying 保底 true 维持音乐场景；播放状态主动上报 |
 | v1.3.1 | 适配 PlayerService 绑定状态修复播放控制无反应；QQ音乐未运行先启动；命令缓存补发；多进程日志合并 |
 | v1.3.0 | QQ音乐官方 AIDL voicePlay 后台搜索直接播放（不弹搜索框） |

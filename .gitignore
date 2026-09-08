@@ -21,3 +21,9 @@ Thumbs.db
 captures/
 .externalNativeBuild/
 .cxx/
+# 内部工作文档/本地杂物（不入库，仅本地与 X 盘保留）
+CHANGELOG.md
+REFERENCE.md
+build_err.txt
+cert.txt
+v134_check/
