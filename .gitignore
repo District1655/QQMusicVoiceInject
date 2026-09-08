@@ -18,12 +18,12 @@ Thumbs.db
 
 # 日志/临时
 *.log
+logs/
+cert.txt
+
+# 内部开发文档（不入库）
+CHANGELOG.md
+REFERENCE.md
 captures/
 .externalNativeBuild/
 .cxx/
-# 内部工作文档/本地杂物（不入库，仅本地与 X 盘保留）
-CHANGELOG.md
-REFERENCE.md
-build_err.txt
-cert.txt
-v134_check/

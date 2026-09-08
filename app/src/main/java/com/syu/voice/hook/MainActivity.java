@@ -21,8 +21,20 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * 模块主界面：查看版本 / 检查更新 / 下载安装 / 查看运行日志。
@@ -132,6 +144,15 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(clearLogBtn);
+
+        Button exportBtn = makeButton("导出完整日志（zip 到 Download，含作用域进程）");
+        exportBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportLogs();
+            }
+        });
+        root.addView(exportBtn);
 
         Button rebootBtn = makeButton("重启车机（使模块生效）");
         rebootBtn.setOnClickListener(new View.OnClickListener() {
@@ -284,69 +305,344 @@ public class MainActivity extends Activity {
     // 日志
     // ------------------------------------------------------------------
 
-    /** 各进程日志目录（v1.3.1 起 QQ音乐进程日志写它自己的 App 私有目录） */
-    private static final String[] LOG_PKGS = {
-            "com.syu.voice.hook",            // 模块/车助理进程
-            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad 版
+    /**
+     * 全部作用域（宿主）包名 + 模块自身兜底。
+     *
+     * v1.6.0 修正：各进程的 LogManager 写的是【宿主自己】的外部私有目录
+     * （/sdcard/Android/data/<宿主pkg>/files/logs/），不是模块目录——
+     * 旧列表用 com.syu.voice.hook 当"车助理进程"是错的，且漏了 TXZ（com.txznet.txz）。
+     * getExternalFilesDir 失败时日志还会 fallback 到宿主内部私有目录 /data/data/<宿主pkg>/files/logs/。
+     */
+    private static final String[] SCOPE_PKGS = {
+            "com.syu.voice",                 // 车助理（语音助手）
+            "com.txznet.txz",               // TXZ 语音主服务
+            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad
             "com.tencent.qqmusiccar",        // QQ音乐 车机版
             "com.tencent.qqmusic",           // QQ音乐 手机版
             "com.netease.cloudmusic.iot",    // 网易云 车机版
             "com.netease.cloudmusic",        // 网易云 手机版
+            "com.syu.voice.hook",            // 模块自身（旧版/兜底目录）
     };
 
-    private File logFileFor(String pkg) {
-        return new File(Environment.getExternalStorageDirectory(),
-                "Android/data/" + pkg + "/files/logs/fytMusicVoiceInject.log");
+    private static final String LOG_NAME = "fytMusicVoiceInject.log";
+    /** 轮转备份后缀（LogManager 1MB 轮转，保留 .1/.2/.3） */
+    private static final String[] LOG_SUFFIXES = {"", ".1", ".2", ".3"};
+
+    private Boolean mRootCache;
+
+    /** 是否有可用 root（结果缓存；首次探测在后台线程做，避免 Magisk 弹窗卡主线程） */
+    private boolean hasRoot() {
+        if (mRootCache == null) {
+            try {
+                mRootCache = new String(suRun("id"), "UTF-8").contains("uid=0");
+            } catch (Throwable t) {
+                mRootCache = false;
+            }
+        }
+        return mRootCache;
+    }
+
+    /** 执行 su 命令并返回 stdout（先读完输出再 waitFor，防大输出撑爆管道死锁） */
+    private static byte[] suRun(String cmd) throws Exception {
+        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+        byte[] out = readAll(p.getInputStream());
+        byte[] err = readAll(p.getErrorStream());
+        int code = p.waitFor();
+        if (code != 0) {
+            throw new RuntimeException("su exit=" + code
+                    + (err.length > 0 ? " err=" + new String(err, "UTF-8").trim() : ""));
+        }
+        return out;
+    }
+
+    private static byte[] readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            bos.write(buf, 0, n);
+        }
+        in.close();
+        return bos.toByteArray();
+    }
+
+    /** 某包的候选日志目录：sdcard 外部私有目录 + /data/data 内部私有目录（fallback） */
+    private static List<File> logFileCandidates(String pkg, String suffix) {
+        List<File> files = new ArrayList<File>();
+        String name = LOG_NAME + suffix;
+        files.add(new File("/sdcard/Android/data/" + pkg + "/files/logs/" + name));
+        files.add(new File("/data/data/" + pkg + "/files/logs/" + name));
+        return files;
+    }
+
+    /**
+     * 读取一个日志文件：先直读（自己能读的），失败且 root 可用时走 su cat。
+     * Android 10+ 分区存储下，模块（普通 uid）读不了 QQ音乐HD 等其他 App 的
+     * 外部私有目录——这正是旧版"看不到 QQ音乐HD 日志"的根因，root 直读绕开限制。
+     *
+     * @return 文件内容；文件不存在/读取失败返回 null
+     */
+    private byte[] readLogBestEffort(String pkg, String suffix) {
+        // 直读（自己目录或 ROM 放开的场景）
+        for (File f : logFileCandidates(pkg, suffix)) {
+            if (f.exists() && f.isFile() && f.canRead()) {
+                try {
+                    byte[] data = readAll(new FileInputStream(f));
+                    if (data.length > 0) {
+                        return data;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        // root 兜底：cat 逐个候选路径，读到内容即返回
+        if (mRootCache == null || mRootCache) {
+            for (File f : logFileCandidates(pkg, suffix)) {
+                try {
+                    byte[] data = suRun("cat " + f.getAbsolutePath());
+                    if (data.length > 0) {
+                        return data;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     private void loadLog() {
-        try {
-            StringBuilder sb = new StringBuilder();
-            boolean any = false;
-            java.util.List<String> failed = new java.util.ArrayList<String>();
-            for (String pkg : LOG_PKGS) {
-                File f = logFileFor(pkg);
-                if (!f.exists() || f.length() == 0) {
-                    continue;
-                }
-                sb.append("===== ").append(pkg).append(" =====\n");
-                try {
-                    BufferedReader br = new BufferedReader(new FileReader(f));
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        sb.append(line).append('\n');
+        mLogView.setText("正在读取日志…（含作用域进程，首次可能弹出 root 授权）");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final StringBuilder sb = new StringBuilder();
+                boolean any = false;
+                final List<String> empty = new ArrayList<String>();
+                for (String pkg : SCOPE_PKGS) {
+                    byte[] data = readLogBestEffort(pkg, "");
+                    if (data == null) {
+                        empty.add(pkg);
+                        continue;
                     }
-                    br.close();
+                    sb.append("===== ").append(pkg).append(" =====\n");
+                    try {
+                        sb.append(new String(data, "UTF-8")).append('\n');
+                    } catch (Throwable t) {
+                        sb.append("(解码失败: ").append(t.getMessage()).append(")\n");
+                    }
                     any = true;
-                } catch (Throwable t) {
-                    failed.add(pkg + "（无权限）");
                 }
+                if (!any) {
+                    sb.append("（暂无日志。请先重启车机让模块生效，或触发一次语音指令）");
+                } else if (!empty.isEmpty()) {
+                    sb.append("\n[提示] 无日志文件的进程: ").append(TextUtils.join(", ", empty))
+                            .append("\n（未安装/未注入或尚未产生日志）");
+                }
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        mLogView.setText(sb.toString());
+                    }
+                });
             }
-            if (!any && failed.isEmpty()) {
-                mLogView.setText("（暂无日志。请先重启车机让模块生效，或触发一次语音指令）");
-                return;
-            }
-            if (!failed.isEmpty()) {
-                sb.append("\n[提示] 无法读取: ").append(TextUtils.join(", ", failed))
-                        .append("\n车机 Android 11+ 读取其他 App 私有目录需 root 或「所有文件访问」权限");
-            }
-            mLogView.setText(sb.length() == 0 ? "（日志为空）" : sb.toString());
-        } catch (Throwable t) {
-            mLogView.setText("读取日志失败: " + t.getMessage()
-                    + "\n请在系统设置中允许「所有文件访问」后重试");
-        }
+        }).start();
     }
 
     private void clearLog() {
         int cleared = 0;
-        for (String pkg : LOG_PKGS) {
-            File f = logFileFor(pkg);
-            if (f.exists() && f.delete()) {
-                cleared++;
+        boolean root = hasRoot();
+        for (String pkg : SCOPE_PKGS) {
+            for (String suffix : LOG_SUFFIXES) {
+                for (File f : logFileCandidates(pkg, suffix)) {
+                    if (!f.exists()) {
+                        continue;
+                    }
+                    if (f.delete()) {
+                        cleared++;
+                    } else if (root) {
+                        // 分区存储下删不了其他 App 目录的文件，root 删
+                        try {
+                            suRun("rm -f " + f.getAbsolutePath());
+                            cleared++;
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
             }
         }
         Toast.makeText(this, "已清空 " + cleared + " 个日志文件", Toast.LENGTH_SHORT).show();
         mLogView.setText("");
+    }
+
+    // ------------------------------------------------------------------
+    // 一键导出完整日志（v1.6.0）
+    // ------------------------------------------------------------------
+
+    /**
+     * 导出模块 + 全部作用域进程的完整日志：
+     *   <pkg>/fytMusicVoiceInject.log[.1~.3]  各进程文件日志（直读 + root 兜底）
+     *   logcat/logcat_filtered.txt            logcat 关键行（fytMusic/Xposed/AndroidRuntime）
+     *   logcat/logcat_recent.txt               logcat 最近 5000 行（全量，root 时）
+     *   info.txt                               版本/环境/各进程文件清单
+     * 有 root：zip 落 /sdcard/Download/（su cp + chmod）；
+     * 无 root：zip 落模块自己外部目录（只含直读能拿到的部分）。
+     */
+    private void exportLogs() {
+        Toast.makeText(this, "正在导出…（后台执行，完成后提示路径）", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String result;
+                try {
+                    final File out = doExportLogs();
+                    result = out != null
+                            ? "已导出: " + out.getAbsolutePath()
+                            : "导出完成，但未能生成文件";
+                } catch (Throwable t) {
+                    result = "导出失败: " + t.getMessage();
+                }
+                final String msg = result;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        mStatusView.setText("状态：" + msg);
+                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private File doExportLogs() throws Exception {
+        boolean root = hasRoot();
+        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        String zipName = "fytMusicVoiceInject_logs_" + stamp + ".zip";
+
+        File cacheDir = new File(getCacheDir(), "export");
+        if (!cacheDir.exists()) {
+            cacheDir.mkdirs();
+        }
+        File tmpZip = new File(cacheDir, zipName);
+
+        List<String> info = new ArrayList<String>();
+        info.add("模块版本: v" + BuildConfig.VERSION_NAME + " (code " + BuildConfig.VERSION_CODE + ")");
+        info.add("导出时间: " + stamp);
+        info.add("Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
+        info.add("Root: " + (root ? "是" : "否（仅直读可获取的日志）"));
+        info.add("");
+        info.add("各进程日志文件:");
+
+        ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tmpZip));
+        try {
+            // 1) 各作用域进程的文件日志（主文件 + 轮转 .1/.2/.3）
+            for (String pkg : SCOPE_PKGS) {
+                StringBuilder pkgLine = new StringBuilder("  ").append(pkg).append(':');
+                boolean hasAny = false;
+                for (String suffix : LOG_SUFFIXES) {
+                    byte[] data = readLogBestEffort(pkg, suffix);
+                    if (data == null) {
+                        continue;
+                    }
+                    putZipEntry(zos, pkg + "/" + LOG_NAME + suffix, data);
+                    pkgLine.append(" ").append(LOG_NAME + suffix)
+                            .append("(").append(data.length).append("B)");
+                    hasAny = true;
+                }
+                if (!hasAny) {
+                    pkgLine.append(" 未找到（未安装/未注入或未产生日志）");
+                }
+                info.add(pkgLine.toString());
+            }
+
+            // 2) logcat
+            byte[] logcatAll = null;
+            if (root) {
+                try {
+                    logcatAll = suRun("logcat -d -t 5000");
+                } catch (Throwable ignored) {
+                }
+            }
+            if (logcatAll == null) {
+                // 无 root：尝试直读（部分车机 ROM 放开 logcat 权限），只取模块 tag
+                try {
+                    Process p = Runtime.getRuntime().exec(
+                            new String[]{"logcat", "-d", "-t", "3000", "-s", "fytMusicVoice"});
+                    logcatAll = readAll(p.getInputStream());
+                    p.waitFor();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (logcatAll != null && logcatAll.length > 0) {
+                putZipEntry(zos, "logcat/logcat_recent.txt", logcatAll);
+                putZipEntry(zos, "logcat/logcat_filtered.txt", filterLines(logcatAll));
+            } else {
+                info.add("");
+                info.add("logcat 不可读（无 root 且 ROM 限制）");
+            }
+
+            // 3) info.txt
+            putZipEntry(zos, "info.txt",
+                    TextUtils.join("\n", info).getBytes("UTF-8"));
+        } finally {
+            zos.close();
+        }
+
+        // 4) 发布：有 root 放 /sdcard/Download/（用户最易取）；否则放模块自己外部目录
+        if (tmpZip.length() == 0) {
+            return null;
+        }
+        if (root) {
+            try {
+                String dst = "/sdcard/Download/" + zipName;
+                suRun("cp " + tmpZip.getAbsolutePath() + " " + dst
+                        + " && chmod 644 " + dst);
+                File out = new File(dst);
+                if (out.exists() && out.length() > 0) {
+                    return out;
+                }
+            } catch (Throwable t) {
+                LogManager.w("export", "root 发布到 Download 失败: " + t.getMessage());
+            }
+        }
+        File fallback = new File(getExternalFilesDir(null), zipName);
+        copyFile(tmpZip, fallback);
+        return fallback;
+    }
+
+    private static void putZipEntry(ZipOutputStream zos, String name, byte[] data) throws Exception {
+        zos.putNextEntry(new ZipEntry(name));
+        zos.write(data);
+        zos.closeEntry();
+    }
+
+    /** 从 logcat 字节流中过滤模块相关行（fytMusic / Xposed / AndroidRuntime，忽略大小写） */
+    private static byte[] filterLines(byte[] logcat) {
+        try {
+            String[] lines = new String(logcat, "UTF-8").split("\n");
+            StringBuilder sb = new StringBuilder();
+            for (String line : lines) {
+                String lower = line.toLowerCase(Locale.US);
+                if (lower.contains("fytmusic") || lower.contains("xposed")
+                        || lower.contains("androidruntime")) {
+                    sb.append(line).append('\n');
+                }
+            }
+            return sb.toString().getBytes("UTF-8");
+        } catch (Throwable t) {
+            return new byte[0];
+        }
+    }
+
+    private static void copyFile(File src, File dst) throws Exception {
+        InputStream in = new FileInputStream(src);
+        OutputStream out = new FileOutputStream(dst);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+        }
+        in.close();
+        out.close();
     }
 
     // ------------------------------------------------------------------

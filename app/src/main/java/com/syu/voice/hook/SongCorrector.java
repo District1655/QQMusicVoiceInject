@@ -1,7 +1,12 @@
 package com.syu.voice.hook;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 语音点歌"识别纠错"层。
@@ -26,6 +31,20 @@ public final class SongCorrector {
 
     /** 词级纠错：key=单个词（按空白拆分后精确匹配），value=正确词 */
     private static final Map<String, String> TOKEN_CORRECTIONS = new HashMap<String, String>();
+
+    /** 高频歌手白名单（v1.5.0 自 v1.4.4 移植）：buildSlots 判断"纯歌手 / 歌手+歌名"用。
+     *  未覆盖的歌手点歌时仍会走 QQ NLU 自由解析被猜错 → 用户反馈后往此表补充。 */
+    private static final Set<String> KNOWN_SINGERS = new HashSet<String>(Arrays.asList(
+            // 港台
+            "周杰伦", "林俊杰", "陈奕迅", "薛之谦", "王菲", "张学友", "刘德华", "王力宏",
+            "陶喆", "林宥嘉", "刘若英", "张信哲", "任贤齐", "齐秦", "张宇", "伍佰",
+            "张震岳", "罗大佑", "李宗盛", "五月天", "Beyond", "陈小春", "谢霆锋", "李克勤",
+            "张国荣", "谭咏麟", "黎明", "郭富城", "容祖儿", "杨千嬅", "莫文蔚", "郑秀文",
+            "陈慧娴", "梁静茹", "孙燕姿", "蔡依林", "张惠妹", "田馥甄", "邓紫棋",
+            // 内地
+            "毛不易", "许嵩", "李荣浩", "周深", "李健", "朴树", "许巍", "汪峰", "郑钧",
+            "周传雄", "张杰", "华晨宇", "那英", "韩红", "孙楠", "杨坤", "汪苏泷",
+            "隔壁老樊", "海来阿木", "程响", "任然", "花粥", "凤凰传奇", "筷子兄弟"));
 
     static {
         // ------------------------------------------------------------------
@@ -128,5 +147,62 @@ public final class SongCorrector {
                     + "\"（如需补充更多误识别词，请把此条日志发给我）");
         }
         return result;
+    }
+
+    /** 是否高频歌手白名单命中 */
+    public static boolean isKnownSinger(String s) {
+        return s != null && KNOWN_SINGERS.contains(s.trim());
+    }
+
+    /**
+     * 从 query 构建语义槽（v1.5.0 自 v1.4.4 移植，slotList 格式见 REFERENCE.md 3.5）。
+     *
+     * 有槽时 QQ音乐 voicePlay 走 SearchSong 意图按槽搜索，不靠 NLU 自由解析——
+     * 无槽时"毛不易"等歌手会被 NLU 猜错（实测播错歌），"周杰伦"碰巧解析对。
+     *
+     * 规则：
+     *   1. 多词且末位/首位命中 KNOWN_SINGERS → ["Singer=歌手", "Track=其余"]
+     *      （extractQuery 产出 "歌名 歌手"（歌手在末位）；兼容 TXZ 直接给 "歌手 歌名" 的情况）
+     *   2. 整句即歌手 → ["Singer=歌手"]（纯歌手点歌：title=空, artist=毛不易）
+     *   3. 其余 → ["Track=整句"]（纯歌名）
+     *
+     * @return 语义槽列表（query 为空时返回空列表）
+     */
+    public static List<String> buildSlots(String query) {
+        List<String> slots = new ArrayList<String>();
+        String s = query == null ? "" : query.trim();
+        if (s.isEmpty()) {
+            return slots;
+        }
+        String[] tokens = s.split("\\s+");
+        if (tokens.length >= 2) {
+            if (isKnownSinger(tokens[tokens.length - 1])) {
+                slots.add("Singer=" + tokens[tokens.length - 1]);
+                slots.add("Track=" + joinTokens(tokens, 0, tokens.length - 1));
+                return slots;
+            }
+            if (isKnownSinger(tokens[0])) {
+                slots.add("Singer=" + tokens[0]);
+                slots.add("Track=" + joinTokens(tokens, 1, tokens.length));
+                return slots;
+            }
+        }
+        if (tokens.length == 1 && isKnownSinger(s)) {
+            slots.add("Singer=" + s);
+            return slots;
+        }
+        slots.add("Track=" + s);
+        return slots;
+    }
+
+    private static String joinTokens(String[] tokens, int from, int to) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = from; i < to; i++) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(tokens[i]);
+        }
+        return sb.toString();
     }
 }

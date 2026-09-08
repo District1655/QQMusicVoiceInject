@@ -5,7 +5,6 @@ import android.util.Base64;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.util.ArrayList;
 import java.util.List;
 
 import de.robv.android.xposed.XposedHelpers;
@@ -85,8 +84,13 @@ public final class ApiHolder {
             if (!fixed.equals(query)) {
                 LogManager.i(TAG, "voicePlay 入口纠错: " + query + " -> " + fixed);
             }
+            // v1.5.0（自 v1.4.4 移植）：携带语义槽。有槽即 SearchSong 意图按槽搜索，
+            // 不靠 QQ NLU 自由解析（无槽时"毛不易"等歌手会被猜错、播错歌）。
+            List<String> slotList = SongCorrector.buildSlots(fixed);
+            if (!slotList.isEmpty()) {
+                LogManager.i(TAG, "voicePlay 语义槽: " + slotList + " <- query=" + fixed);
+            }
             Object callback = makeCallback("voicePlay");
-            List<String> slotList = new ArrayList<String>();
             XposedHelpers.callMethod(api, "voicePlay", fixed, slotList, callback);
             LogManager.i(TAG, "voicePlay 已发出 -> query=" + fixed);
             return true;
