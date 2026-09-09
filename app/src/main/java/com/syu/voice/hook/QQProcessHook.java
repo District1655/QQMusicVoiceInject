@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Handler;
+import android.os.SystemClock;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
@@ -53,6 +54,14 @@ public final class QQProcessHook {
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean sPolling;
     private static volatile int sPollAttempts;
+
+    // 冷启动重发去重：发送端（车助理进程）冷启动时会在 4/9/15/25s 重发同一广播，
+    // 拦截端短窗口内相同指令只执行一次，避免重复点歌/重复控制
+    private static volatile String sLastPlayQuery;
+    private static volatile long sLastPlayTime;
+    private static volatile int sLastCmd = -2;      // -2 表示尚无控制指令
+    private static volatile long sLastCmdExtra;
+    private static volatile long sLastCmdTime;
 
     private QQProcessHook() {
     }
@@ -245,6 +254,16 @@ public final class QQProcessHook {
                 String query = ApiHolder.decodeSearchKey(key);
                 LogManager.i(TAG, "[拦截] 点歌 action=8 search_key=" + key + " -> query=" + query);
                 if (query != null && !query.trim().isEmpty()) {
+                    // 去重：发送端冷启动会在 4/9/15/25s 重发同一广播，20 秒内相同 query
+                    // 已处理过（voicePlay 成功或已缓存待补发）则直接消费，不重复点歌
+                    long now = SystemClock.uptimeMillis();
+                    if (query.equals(sLastPlayQuery) && now - sLastPlayTime < 20000) {
+                        LogManager.i(TAG, "[去重] " + (now - sLastPlayTime)
+                                + "ms 内相同点歌已处理，消费重发广播不重复播放: " + query);
+                        return true;
+                    }
+                    sLastPlayQuery = query;
+                    sLastPlayTime = now;
                     if (ApiHolder.voicePlay(query)) {
                         LogManager.i(TAG, ">>> 已走内部 API 后台播放（不弹搜索框）");
                         return true;
@@ -268,6 +287,16 @@ public final class QQProcessHook {
                 } catch (Throwable ignored) {
                 }
                 LogManager.i(TAG, "[拦截] 播放控制 action=20 m0=" + m0 + " m1=" + m1);
+                // 去重：冷启动重发的相同控制指令 6 秒内只执行一次
+                long now = SystemClock.uptimeMillis();
+                if (cmd == sLastCmd && extra == sLastCmdExtra && now - sLastCmdTime < 6000) {
+                    LogManager.i(TAG, "[去重] " + (now - sLastCmdTime)
+                            + "ms 内相同控制指令已处理，消费重发广播: cmd=" + cmd);
+                    return true;
+                }
+                sLastCmd = cmd;
+                sLastCmdExtra = extra;
+                sLastCmdTime = now;
                 if (ApiHolder.control(cmd, extra)) {
                     LogManager.i(TAG, ">>> 已走内部 API 播放控制");
                     return true;

@@ -68,7 +68,12 @@ public final class QQMusicController {
     public void controlPlay(int ctrl, int extra) {
         String url = mScheme + "://?action=" + ACTION_CONTROL_PLAY
                 + "&m0=" + ctrl + "&m1=" + extra;
+        boolean started = ensureRunning();
         sendSchemeBroadcast(url, "controlPlay(" + ctrl + "," + extra + ")");
+        if (started) {
+            // 冷启动：广播可能早于播放器进程内 hook 就绪被原生链路抢走/丢失，延迟重发覆盖就绪窗口
+            scheduleRetry(url, "controlPlay(" + ctrl + "," + extra + ") 冷启动重发");
+        }
     }
 
     /**
@@ -99,8 +104,15 @@ public final class QQMusicController {
         }
         String url = mScheme + "://?action=" + ACTION_SEARCH_PLAY
                 + "&search_key=" + encB64 + "&m1=true";
-        sendSchemeBroadcast(url, "searchAndPlay(" + keyword + ") b64=" + b64
-                + " enc=" + encB64);
+        String desc = "searchAndPlay(" + keyword + ") b64=" + b64 + " enc=" + encB64;
+        boolean started = ensureRunning();
+        sendSchemeBroadcast(url, desc);
+        if (started) {
+            // 冷启动：播放器进程刚拉起，广播可能早于进程内 hook 就绪被原生链路抢走/丢失
+            // （实测冷启动后 hook 就绪可能需要数十秒），延迟重发覆盖就绪窗口；
+            // 拦截端对相同 query 短窗口去重，已播放过的不会重复点歌
+            scheduleRetry(url, desc + " 冷启动重发");
+        }
     }
 
     /** 打开 QQ音乐 */
@@ -109,11 +121,39 @@ public final class QQMusicController {
         sendSchemeBroadcast(url, "open()");
     }
 
+    /**
+     * 冷启动重发：播放器进程刚被拉起时，广播可能早于进程内模块 hook 就绪
+     * （被原生 receiver 抢走处理或进程未完全启动而丢失），实测 hook 就绪可能需数十秒。
+     * 在 4s/9s/15s/25s 重发同一广播：hook 就绪后第一次重发即被拦截走 voicePlay，
+     * 拦截端对相同指令短窗口去重（已成功的不再重复执行）；hook 始终不就绪时
+     * 原生 receiver 也会按 action=8 搜索播放（与旧版行为一致）。
+     */
+    private void scheduleRetry(final String url, final String desc) {
+        final long[] delays = {4000, 9000, 15000, 25000};
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                for (long d : delays) {
+                    try {
+                        Thread.sleep(d);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    // 播放器已退出（用户手动杀掉）则不再重发
+                    if (!isPkgRunning(mPkg)) {
+                        LogManager.i("QQMusicController", "[" + mScheme + "] 冷启动重发取消："
+                                + mPkg + " 已不在运行");
+                        return;
+                    }
+                    sendSchemeBroadcast(url, desc + " (+" + d + "ms)");
+                }
+            }
+        }, "fyt-coldstart-retry").start();
+    }
+
     /** 发送携带 scheme data 的广播，由 BroadcastReceiverCenterForThird 处理（不走 Activity 中转） */
     private void sendSchemeBroadcast(String url, String desc) {
         try {
-            // QQ音乐未运行时先启动它（否则广播无人处理、指令失效）
-            ensureRunning();
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.setPackage(mPkg);
             mContext.sendBroadcast(intent);
@@ -127,11 +167,13 @@ public final class QQMusicController {
      * 确保 QQ音乐在运行：检测不到其进程时，先启动它再操作。
      * 车助理是系统 uid，getRunningAppProcesses 可枚举全部进程；拿不到列表时
      * 默认视为已运行，避免误启动打断正在播放的音乐。
+     *
+     * @return true=本次调用触发了启动（冷启动场景，调用方应延迟重发广播）
      */
-    private void ensureRunning() {
+    private boolean ensureRunning() {
         try {
             if (isPkgRunning(mPkg)) {
-                return;
+                return false;
             }
             LogManager.i("QQMusicController", "[" + mPkg + "] 未在运行，先启动…");
             Intent launch = mContext.getPackageManager().getLaunchIntentForPackage(mPkg);
@@ -139,12 +181,14 @@ public final class QQMusicController {
                 launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 mContext.startActivity(launch);
                 LogManager.i("QQMusicController", "[" + mPkg + "] 已发送启动 Intent");
+                return true;
             } else {
                 LogManager.w("QQMusicController", "[" + mPkg + "] 无启动 Intent（未安装？）");
             }
         } catch (Throwable t) {
             LogManager.e("QQMusicController", "[" + mPkg + "] 启动失败，继续发广播", t);
         }
+        return false;
     }
 
     /** 检测目标包是否有存活进程（QQ音乐多进程，任一进程存活即视为运行中） */
