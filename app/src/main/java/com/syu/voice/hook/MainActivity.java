@@ -42,6 +42,8 @@ import java.util.zip.ZipOutputStream;
  */
 public class MainActivity extends Activity {
 
+    public static final String TAG = MainHook.TAG;
+
     private TextView mStatusView;
     private Button mCheckBtn;
     private Button mDownloadBtn;
@@ -50,6 +52,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 模块 App 进程（com.syu.voice.hook）不是 LSPosed 作用域宿主，
+        // MainHook 不会在本进程跑，需自己初始化文件日志，便于记录按钮操作。
+        try {
+            LogManager.init(this);
+        } catch (Throwable ignored) {
+        }
         buildUi();
     }
 
@@ -162,6 +170,15 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(rebootBtn);
+
+        Button forceStopBtn = makeButton("强制停止作用域应用（重载模块代码）");
+        forceStopBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmForceStopScope();
+            }
+        });
+        root.addView(forceStopBtn);
 
         // 日志区域：固定高度，内部 ScrollView 独立滚动
         ScrollView logScroll = new ScrollView(this);
@@ -813,6 +830,155 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             Toast.makeText(this, "重启失败：未获取 root 权限。\n请在 Magisk 中允许本应用获取 root。",
                     Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 强制停止作用域应用（让所有宿主进程重新加载最新模块代码）
+    // ------------------------------------------------------------------
+
+    /** 需要停止的作用域宿主包（排除模块自身 com.syu.voice.hook） */
+    private static final String[] FORCE_STOP_PKGS = {
+            "com.syu.voice",                 // 车助理（语音助手，系统应用会自动重启）
+            "com.txznet.txz",               // TXZ 语音主服务
+            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad
+            "com.tencent.qqmusiccar",        // QQ音乐 车机版
+            "com.tencent.qqmusic",           // QQ音乐 手机版
+            "com.netease.cloudmusic.iot",    // 网易云 车机版
+            "com.netease.cloudmusic",        // 网易云 手机版
+    };
+
+    private void confirmForceStopScope() {
+        new AlertDialog.Builder(this)
+                .setTitle("强制停止作用域应用")
+                .setMessage("将强制停止所有作用域 App（车助理、TXZ语音、QQ音乐等），"
+                        + "使其重新加载最新模块代码。\n\n"
+                        + "语音和音乐播放会短暂中断；车助理/TXZ等系统服务会被系统自动拉起，"
+                        + "QQ音乐等普通应用需下次语音指令时由模块拉起。\n\n"
+                        + "需要 Root 权限。是否继续？")
+                .setPositiveButton("确定", (d, w) -> doForceStopScope())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doForceStopScope() {
+        mLogView.setText("正在强制停止作用域应用…（需要 Root，首次可能弹出 Magisk 授权）\n");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                StringBuilder sb = new StringBuilder();
+                sb.append("===== 强制停止作用域应用 ")
+                        .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                                .format(new Date()))
+                        .append(" =====\n");
+                if (!hasRoot()) {
+                    sb.append("❌ 无 Root 权限，无法执行 am force-stop\n")
+                            .append("（请在 Magisk 中允许 fytMusicVoiceInject 获取 root）\n");
+                    final String r = sb.toString();
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            mLogView.setText(r);
+                        }
+                    });
+                    return;
+                }
+                int ok = 0, fail = 0, skip = 0;
+                for (String pkg : FORCE_STOP_PKGS) {
+                    // 1. 是否已安装
+                    boolean installed;
+                    try {
+                        getPackageManager().getPackageInfo(pkg, 0);
+                        installed = true;
+                    } catch (Throwable t) {
+                        installed = false;
+                    }
+                    if (!installed) {
+                        sb.append(pkg).append(": 未安装，跳过\n");
+                        skip++;
+                        continue;
+                    }
+                    // 2. 停止前 pid
+                    String pidBefore = getPidOf(pkg);
+                    // 3. am force-stop
+                    String forceErr = null;
+                    try {
+                        suRun("am force-stop " + pkg);
+                    } catch (Throwable t) {
+                        forceErr = t.getMessage();
+                    }
+                    // 4. 等待 600ms 让进程退出（系统服务可能被立即拉起，属正常）
+                    try {
+                        Thread.sleep(600);
+                    } catch (Throwable ignored) {
+                    }
+                    // 5. 停止后 pid
+                    String pidAfter = getPidOf(pkg);
+                    boolean stopped = pidAfter.isEmpty();
+                    sb.append(pkg).append(": ");
+                    if (pidBefore.isEmpty()) {
+                        sb.append("停止前=未运行");
+                    } else {
+                        sb.append("停止前 pid=").append(pidBefore);
+                    }
+                    sb.append(" → ");
+                    if (stopped) {
+                        sb.append("已停止 ✅");
+                        ok++;
+                    } else {
+                        sb.append("仍在运行 pid=").append(pidAfter).append(" ⚠️")
+                                .append("（系统服务可能被自动拉起，属正常；新进程已加载新模块）");
+                        // 进程被自动重启也算"生效"——新 pid 即是新进程
+                        if (!pidBefore.equals(pidAfter)) {
+                            ok++;
+                        } else {
+                            fail++;
+                        }
+                    }
+                    if (forceErr != null) {
+                        sb.append(" | force-stop 异常: ").append(forceErr);
+                        fail++;
+                    }
+                    sb.append("\n");
+                }
+                sb.append("===== 完成（成功 ").append(ok)
+                        .append("，失败 ").append(fail)
+                        .append("，跳过未安装 ").append(skip).append("）=====\n")
+                        .append("说明：系统服务（车助理/TXZ）停止后会被系统立即拉起，")
+                        .append("新进程已加载最新模块代码；QQ音乐等普通应用需下次语音指令时由模块拉起。\n");
+
+                // 写入模块 App 自己的文件日志 + logcat
+                LogManager.i(TAG, "强制停止作用域应用结果:\n" + sb.toString());
+
+                final String result = sb.toString();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        mLogView.setText(result);
+                        Toast.makeText(MainActivity.this,
+                                "已强制停止作用域应用，详情见日志区域",
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * 取某包的主进程 pid（root 下 pidof）。返回空串表示未运行。
+     * pidof 可能返回多个 pid（多进程 App），取第一个。
+     */
+    private String getPidOf(String pkg) {
+        try {
+            byte[] out = suRun("pidof " + pkg);
+            String s = new String(out, "UTF-8").trim();
+            if (s.isEmpty()) {
+                return "";
+            }
+            int sp = s.indexOf(' ');
+            return sp > 0 ? s.substring(0, sp) : s;
+        } catch (Throwable t) {
+            return "";
         }
     }
 }
