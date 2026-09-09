@@ -414,6 +414,28 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /**
+     * v1.8.1：从某进程日志内容解析"模块加载"记录里的版本号。
+     * 车助理: "模块加载，进程: ...，版本: 1.8.1"；QQ/TXZ: "模块加载（…进程）v1.8.1 ..."。
+     * @return 版本号字符串（如 1.8.1）；无加载记录返回 null
+     */
+    private static String parseLoadedVersion(byte[] data) {
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        try {
+            String text = new String(data, "UTF-8");
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                    "模块加载[^\\n]*?(?:版本[: ]+|v)([0-9]+\\.[0-9]+\\.[0-9]+)")
+                    .matcher(text);
+            if (m.find()) {
+                return m.group(1);
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
     private void loadLog() {
         mLogView.setText("正在读取日志…（含作用域进程，首次可能弹出 root 授权）");
         new Thread(new Runnable() {
@@ -428,7 +450,10 @@ public class MainActivity extends Activity {
                         empty.add(pkg);
                         continue;
                     }
-                    sb.append("===== ").append(pkg).append(" =====\n");
+                    String ver = parseLoadedVersion(data);
+                    sb.append("===== ").append(pkg)
+                            .append(ver != null ? "（模块 v" + ver + " 已加载）" : "（未检测到模块加载记录）")
+                            .append(" =====\n");
                     try {
                         sb.append(new String(data, "UTF-8")).append('\n');
                     } catch (Throwable t) {
@@ -440,7 +465,9 @@ public class MainActivity extends Activity {
                     sb.append("（暂无日志。请先重启车机让模块生效，或触发一次语音指令）");
                 } else if (!empty.isEmpty()) {
                     sb.append("\n[提示] 无日志文件的进程: ").append(TextUtils.join(", ", empty))
-                            .append("\n（未安装/未注入或尚未产生日志）");
+                            .append("\n（未安装/未注入或尚未产生日志）")
+                            .append("\n★ 若 QQ音乐HD / TXZ 在此列：打开 LSPosed -> 模块 -> fytMusicVoiceInject，")
+                            .append("确认勾选了该应用，并强制停止它（或重启车机）后再测。");
                 }
                 runOnUiThread(new Runnable() {
                     @Override
@@ -573,6 +600,7 @@ public class MainActivity extends Activity {
                 for (String pkg : SCOPE_PKGS) {
                     StringBuilder pkgLine = new StringBuilder("  ").append(pkg).append(':');
                     boolean hasAny = false;
+                    String loadedVer = null;
                     for (String suffix : LOG_SUFFIXES) {
                         byte[] data = readLogBestEffort(pkg, suffix);
                         if (data == null) {
@@ -582,9 +610,15 @@ public class MainActivity extends Activity {
                         pkgLine.append(" ").append(LOG_NAME + suffix)
                                 .append("(").append(data.length).append("B)");
                         hasAny = true;
+                        if ("".equals(suffix)) {
+                            loadedVer = parseLoadedVersion(data);
+                        }
                     }
                     if (hasAny) {
                         r.foundPkgs.add(pkg);
+                        pkgLine.append(loadedVer != null
+                                ? " | 模块 v" + loadedVer + " 已加载"
+                                : " | 有日志但无模块加载记录（旧版本？）");
                     } else {
                         pkgLine.append(" 未找到（未安装/未注入/未产生日志或无 root 读不到）");
                     }

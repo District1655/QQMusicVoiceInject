@@ -44,6 +44,14 @@ public final class QQProcessHook {
             "com.tencent.qqmusiccar.third.api.apiImpl.ApiMethodsImpl";
     private static final String SERVICE_PROXY_HELPER =
             "com.tencent.qqmusic.qplayer.core.player.proxy.QQMusicServiceProxyHelper";
+    /** v1.8.1：当前"活跃第三方包名"管理器，b() 返回 null 会导致播放统计协程 NPE 崩溃 */
+    private static final String ACTIVE_APP_MANAGER =
+            "com.tencent.qqmusiccar.third.api.ActiveAppManager";
+    /** v1.8.1：车机偏好设置，d0()="边听边存"开关（默认随云控开启），开启后播放即下载到本地 */
+    private static final String TV_PREFERENCES =
+            "com.tencent.qqmusiccar.common.sp.TvPreferences";
+    /** 活跃第三方包名兜底值：本模块所有语音指令实际来自方易通车助理 */
+    private static final String FALLBACK_ACTIVE_PKG = "com.syu.voice";
 
     // ------------------------------------------------------------------
     // pending：ApiMethodsImpl 未就绪时缓存命令，就绪后自动补发
@@ -171,11 +179,94 @@ public final class QQProcessHook {
                                     + BuildConfig.VERSION_NAME + " 日志文件="
                                     + LogManager.getLogFile());
                             ensureApiService(app, pkg);
+                            applyEnvironmentFixes(pkg);
                         }
                     });
         } catch (Throwable t) {
             LogManager.e(TAG, "[" + pkg + "] hook Application.onCreate 失败（文件日志不可用）", t);
         }
+
+        // 6) v1.8.1 运行环境修复（防崩溃 + 防偷跑下载），与 1~5 互不依赖：
+        //    a. ActiveAppManager.b() 返回 null 时兜底非空包名——
+        //       反编译确认播放统计协程 PlayerServiceHelper$initPlayerProcessCallback$1.f()
+        //       对 b() 结果做 Intrinsics.g 非空断言，null 即 NPE 直接崩溃（215157 日志实测）。
+        //       该字段只有第三方 Binder AIDL 调用经过 checkPermission 时才被赋值，
+        //       模块是进程内反射调用、不走 Binder，不 hook 时该字段恒为 null。
+        //    b. TvPreferences.d0()（"边听边存"开关，云控 conf_listen_and_save 默认 true）
+        //       强制返回 false——开启时 MusicPlayerHelper 会把播放缓存落成本地文件，
+        //       用户看到"莫名其妙下载了歌曲"。
+        try {
+            Class<?> aamCls = XposedHelpers.findClass(ACTIVE_APP_MANAGER, cl);
+            XposedHelpers.findAndHookMethod(aamCls, "b", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.getResult() == null) {
+                        param.setResult(FALLBACK_ACTIVE_PKG);
+                        LogManager.i(TAG, "[" + pkg + "] ActiveAppManager.b() 为 null，已兜底 "
+                                + FALLBACK_ACTIVE_PKG + "（防播放统计 NPE 崩溃）");
+                    }
+                }
+            });
+            LogManager.i(TAG, "[" + pkg + "] 已 hook ActiveAppManager.b()（null 兜底防崩溃）");
+        } catch (Throwable t) {
+            LogManager.e(TAG, "[" + pkg + "] hook ActiveAppManager.b() 失败", t);
+        }
+        try {
+            Class<?> tvpCls = XposedHelpers.findClass(TV_PREFERENCES, cl);
+            XposedHelpers.findAndHookMethod(tvpCls, "d0", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object r = param.getResult();
+                    if (r instanceof Boolean && (Boolean) r) {
+                        param.setResult(Boolean.FALSE);
+                        LogManager.i(TAG, "[" + pkg + "] TvPreferences.d0()=true（边听边存开启），"
+                                + "已强制返回 false，防止播放时自动下载歌曲到本地");
+                    }
+                }
+            });
+            LogManager.i(TAG, "[" + pkg + "] 已 hook TvPreferences.d0()（强制关闭边听边存）");
+        } catch (Throwable t) {
+            LogManager.e(TAG, "[" + pkg + "] hook TvPreferences.d0() 失败", t);
+        }
+    }
+
+    /**
+     * v1.8.1：主动写一次运行环境（hook 的双保险），在 Application.onCreate 延迟 2.5s 执行：
+     * 1. ActiveAppManager.a().f(pkg)：直接把"活跃第三方包名"写非空，
+     *    避免统计协程在 hook 注册前的窗口空指针崩溃；
+     * 2. TvPreferences.r().n1(false)：把"边听边存"持久化关闭（QQ 设置页同步显示关闭）。
+     */
+    private static void applyEnvironmentFixes(final String pkg) {
+        sHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                ClassLoader cl = ApiHolder.getClassLoader();
+                if (cl == null) {
+                    LogManager.w(TAG, "[" + pkg + "] 环境修复跳过：ClassLoader 未就绪");
+                    return;
+                }
+                try {
+                    Class<?> aamCls = XposedHelpers.findClass(ACTIVE_APP_MANAGER, cl);
+                    Object aam = XposedHelpers.callStaticMethod(aamCls, "a");
+                    XposedHelpers.callMethod(aam, "f", FALLBACK_ACTIVE_PKG);
+                    LogManager.i(TAG, "[" + pkg + "] 已主动设置 ActiveAppManager 活跃包名="
+                            + FALLBACK_ACTIVE_PKG);
+                } catch (Throwable t) {
+                    LogManager.w(TAG, "[" + pkg + "] 主动设置 ActiveAppManager 失败: "
+                            + t.getMessage());
+                }
+                try {
+                    Class<?> tvpCls = XposedHelpers.findClass(TV_PREFERENCES, cl);
+                    Object tvp = XposedHelpers.callStaticMethod(tvpCls, "r");
+                    XposedHelpers.callMethod(tvp, "n1", false);
+                    LogManager.i(TAG, "[" + pkg + "] 已持久化关闭 QQ音乐\"边听边存\""
+                            + "（播放不再自动下载歌曲）");
+                } catch (Throwable t) {
+                    LogManager.w(TAG, "[" + pkg + "] 持久化关闭边听边存失败: "
+                            + t.getMessage());
+                }
+            }
+        }, 2500);
     }
 
     /** 从 QQMusicApiService 实例反射取 e.e 得到 ApiMethodsImpl */

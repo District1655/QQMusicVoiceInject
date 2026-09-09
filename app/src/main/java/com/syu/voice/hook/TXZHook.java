@@ -1,5 +1,7 @@
 package com.syu.voice.hook;
 
+import android.content.Context;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 
@@ -63,6 +65,36 @@ public final class TXZHook {
     }
 
     public static void hook(ClassLoader cl) {
+        // v1.8.1：TXZ 进程此前从未初始化文件日志（handleLoadPackage 时无 Context），
+        // 导致导出的日志包里 TXZ 永远"未找到"，无法判断模块是否注入。
+        // hook Application.onCreate 拿到 Context 后初始化日志并打印加载版本。
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+                    "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            try {
+                                Context moduleCtx = app.createPackageContext(
+                                        "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
+                                boolean logEnabled = moduleCtx.getSharedPreferences(
+                                        "fyt_music_voice_prefs", Context.MODE_PRIVATE)
+                                        .getBoolean("log_enabled", true);
+                                LogManager.setEnabled(logEnabled);
+                            } catch (Throwable t) {
+                                LogManager.w(TAG, "TXZ: 读取日志开关失败，默认开启");
+                            }
+                            LogManager.i(TAG, "模块加载（TXZ语音进程）v"
+                                    + BuildConfig.VERSION_NAME + " 日志文件="
+                                    + LogManager.getLogFile());
+                        }
+                    });
+        } catch (Throwable t) {
+            LogManager.e(TAG, "TXZ hook Application.onCreate 失败（文件日志不可用）", t);
+        }
+
         try {
             // com.txznet.txz.module.music.b（混淆后类名就是 b）私有方法 y() 返回 false
             XposedHelpers.findAndHookMethod("com.txznet.txz.module.music.b", cl,

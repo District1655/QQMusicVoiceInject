@@ -176,7 +176,17 @@ public final class QQMusicToolProxy {
                                 LogManager.i(TAG, "[" + mPkg + "] 哨兵路由 -> 排行榜");
                                 qq().playFolder(QQMusicController.FOLDER_RANK);
                             } else {
-                                qq().searchAndPlay(extractQuery(pmModel));
+                                // v1.8.1：关键词兜底——TXZ 进程未注入新版模块（或云端 NLU 未拦截）
+                                // 时，"播放我喜欢/收藏的歌单/排行榜"会被云 NLU 误判成点歌 title。
+                                // 车助理进程每次升级都必然重新加载，在此按 title 二次识别并路由歌单。
+                                int folder = matchPlaylistTitle(title);
+                                if (folder >= 0) {
+                                    LogManager.i(TAG, "[" + mPkg + "] 关键词兜底路由 -> 歌单 type="
+                                            + folder + "（云NLU误判为点歌，title=" + title + "）");
+                                    qq().playFolder(folder);
+                                } else {
+                                    qq().searchAndPlay(extractQuery(pmModel));
+                                }
                             }
                         } else {
                             playMusic(pmModel);
@@ -258,6 +268,45 @@ public final class QQMusicToolProxy {
             } catch (Throwable t) {
                 return "";
             }
+        }
+
+        /**
+         * v1.8.1：歌单关键词兜底识别（只看 title，不看 artist，降低误判）。
+         * 云端 NLU 常把"播放我喜欢/收藏的歌单（ASR 易错字'歌丹'）/排行榜/每日30首"
+         * 误识别为点歌，命中返回 FOLDER_*，未命中返回 -1 走正常搜索。
+         */
+        private static int matchPlaylistTitle(String title) {
+            if (title == null) {
+                return -1;
+            }
+            String t = title.trim();
+            if (t.isEmpty()) {
+                return -1;
+            }
+            // 排行榜
+            if (t.contains("排行榜") || t.contains("榜单") || t.contains("排行")
+                    || t.contains("热歌榜") || t.contains("新歌榜") || t.contains("飙升榜")
+                    || t.contains("巅峰榜") || t.contains("音乐榜") || t.contains("流行榜")) {
+                return QQMusicController.FOLDER_RANK;
+            }
+            // 每日30首/每日推荐
+            if (t.contains("每日30") || t.contains("每日三十") || t.contains("每天30")
+                    || t.contains("每天三十") || t.contains("每日推荐") || t.contains("每天推荐")) {
+                return QQMusicController.FOLDER_DAILY_30;
+            }
+            // 猜你喜欢/随便听听/推荐歌曲（个人电台）——先于"我喜欢"规则，避免误吞"猜你喜欢"
+            if (t.contains("猜你喜欢") || t.contains("随便听")
+                    || t.contains("好听的") || t.contains("来点歌")
+                    || (t.contains("推荐")
+                        && (t.contains("歌") || t.contains("音乐") || t.contains("曲")))) {
+                return QQMusicController.FOLDER_PERSONAL_RADIO;
+            }
+            // 我喜欢/收藏（含 ASR 错字场景：title="收藏的歌丹" 含"收藏"照样命中）
+            if (t.contains("收藏") || t.contains("我喜欢")
+                    || t.contains("喜欢的歌") || t.contains("喜欢的音乐")) {
+                return QQMusicController.FOLDER_FAVOURITE;
+            }
+            return -1;
         }
 
         /** 从 MusicModel 提取搜索关键词（歌名 + 歌手），供 QQ音乐 scheme 点歌使用 */

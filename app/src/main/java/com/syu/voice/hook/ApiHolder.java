@@ -1,6 +1,8 @@
 package com.syu.voice.hook;
 
 import android.util.Base64;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -40,6 +42,11 @@ public final class ApiHolder {
 
     public static void init(ClassLoader cl) {
         sCl = cl;
+    }
+
+    /** v1.8.1：供 QQProcessHook 环境修复反射使用 */
+    public static ClassLoader getClassLoader() {
+        return sCl;
     }
 
     public static boolean isReady() {
@@ -222,8 +229,22 @@ public final class ApiHolder {
         }
     }
 
-    /** 播放歌单/电台：201=我喜欢/收藏歌曲，104=猜你喜欢（个人电台推荐流） */
+    /**
+     * 播放歌单/电台：201=我喜欢/收藏歌曲，104=猜你喜欢（个人电台推荐流）。
+     * v1.8.1：201 收藏在 QQ 冷启动后本地收藏缓存（MyFavManager）可能尚未同步，
+     * 官方 playFavourite 会立即回调 onError code=101 "myfav is empty."；
+     * 此时按 4s/8s/15s 退避自动重试，缓存同步后即可正常播放。
+     */
     public static boolean playFolder(int folderType) {
+        Object api = sApi;
+        if (api == null) {
+            LogManager.w(TAG, "playFolder(" + folderType + ") 失败：ApiMethodsImpl 未就绪");
+            return false;
+        }
+        return invokePlayFolder(folderType, 0);
+    }
+
+    private static boolean invokePlayFolder(final int folderType, final int attempt) {
         Object api = sApi;
         if (api == null) {
             LogManager.w(TAG, "playFolder(" + folderType + ") 失败：ApiMethodsImpl 未就绪");
@@ -231,17 +252,81 @@ public final class ApiHolder {
         }
         try {
             String folderId = folderType + "|0";
-            Object callback = makeCallback("playFolder(" + folderType + ")");
+            final String desc = "playFolder(" + folderType + ")";
+            Object callback = makeFolderCallback(folderType, attempt, desc);
             XposedHelpers.callMethod(api, "playFolderType", folderId, folderType, 0, callback);
             LogManager.i(TAG, "playFolderType 已发出 -> type=" + folderType
                     + (folderType == FOLDER_FAVOURITE ? "（我喜欢/收藏）"
-                    : folderType == FOLDER_PERSONAL_RADIO ? "（个人电台/推荐）" : ""));
+                    : folderType == FOLDER_PERSONAL_RADIO ? "（个人电台/推荐）" : "")
+                    + (attempt > 0 ? " 第" + (attempt + 1) + "次尝试" : ""));
             return true;
         } catch (Throwable t) {
             LogManager.e(TAG, "playFolder(" + folderType + ") 调用失败", t);
             return false;
         }
     }
+
+    /** 收藏空列表（code=101）自动重试的回调 */
+    private static Object makeFolderCallback(final int folderType, final int attempt,
+            final String desc) {
+        if (sCl == null) {
+            return null;
+        }
+        try {
+            Class<?> cbCls = XposedHelpers.findClass(
+                    "com.tencent.qqmusic.third.api.contract.IQQMusicApiCallback", sCl);
+            return Proxy.newProxyInstance(sCl, new Class<?>[]{cbCls}, new InvocationHandler() {
+                @Override
+                public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+                    String name = method.getName();
+                    if ("onSuccess".equals(name) && args != null && args.length > 0) {
+                        LogManager.i(TAG, "[" + desc + "] onSuccess bundle: "
+                                + dumpBundle(args[0]));
+                    } else if ("onError".equals(name)) {
+                        int code = (args != null && args.length > 0 && args[0] instanceof Integer)
+                                ? (Integer) args[0] : -1;
+                        LogManager.w(TAG, "[" + desc + "] onError code="
+                                + (args != null && args.length > 0 ? args[0] : "?")
+                                + " msg=" + (args != null && args.length > 1 ? args[1] : "?"));
+                        // v1.8.1：收藏列表本地缓存未同步（101）时退避重试
+                        if (folderType == FOLDER_FAVOURITE && code == 101
+                                && attempt < FAV_RETRY_DELAY_MS.length) {
+                            final long delay = FAV_RETRY_DELAY_MS[attempt];
+                            final int next = attempt + 1;
+                            LogManager.i(TAG, "[" + desc + "] 收藏列表本地缓存为空（code=101），"
+                                    + delay / 1000 + "s 后自动重试（第" + (next + 1) + "次）");
+                            sMainHandler.postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    invokePlayFolder(folderType, next);
+                                }
+                            }, delay);
+                        }
+                    } else {
+                        LogManager.d(TAG, "[" + desc + "] 回调 " + name);
+                    }
+                    Class<?> ret = method.getReturnType();
+                    if (ret == boolean.class) {
+                        return Boolean.FALSE;
+                    }
+                    if (ret == int.class) {
+                        return Integer.valueOf(0);
+                    }
+                    if (ret == long.class) {
+                        return Long.valueOf(0L);
+                    }
+                    return null;
+                }
+            });
+        } catch (Throwable t) {
+            LogManager.d(TAG, "makeFolderCallback 失败（可忽略，传 null）: " + t.getMessage());
+            return null;
+        }
+    }
+
+    /** v1.8.1：收藏 code=101 退避重试间隔（冷启动后 MyFavManager 本地缓存同步需要数秒） */
+    private static final long[] FAV_RETRY_DELAY_MS = { 4000L, 8000L, 15000L };
+    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
 
     /**
      * 解析广播里的 search_key。发送端（v1.6.2+）= 标准 Base64.NO_WRAP 再 URLEncoder，
