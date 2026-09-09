@@ -52,6 +52,16 @@ public final class QQMusicController {
     private static final int ACTION_OPEN = 0;
     private static final int ACTION_SEARCH_PLAY = 8;
     private static final int ACTION_CONTROL_PLAY = 20;
+    /**
+     * v1.7.0 新增：歌单/电台播放（模块自定义 action，QQ音乐原生 receiver 不识别，
+     * 必须由 QQProcessHook 拦截后走 ApiMethodsImpl.playFolderType）：
+     *   m0=201 播放我喜欢/收藏的歌曲；m0=104 播放个人电台（智能推荐流）
+     */
+    private static final int ACTION_FOLDER_PLAY = 30;
+
+    /** 歌单类型：201=我喜欢/收藏，104=个人电台（推荐流），与 ApiHolder 常量对应 */
+    public static final int FOLDER_FAVOURITE = 201;
+    public static final int FOLDER_PERSONAL_RADIO = 104;
 
     private final Context mContext;
     private final String mPkg;
@@ -111,6 +121,24 @@ public final class QQMusicController {
             // 冷启动：播放器进程刚拉起，广播可能早于进程内 hook 就绪被原生链路抢走/丢失
             // （实测冷启动后 hook 就绪可能需要数十秒），延迟重发覆盖就绪窗口；
             // 拦截端对相同 query 短窗口去重，已播放过的不会重复点歌
+            scheduleRetry(url, desc + " 冷启动重发");
+        }
+    }
+
+    /**
+     * 歌单/电台播放（v1.7.0）：action=30 由播放器进程内模块拦截，走官方
+     * ApiMethodsImpl.playFolderType 后台播放（不跳页面）。
+     * 原生 receiver 不识别 action=30，故冷启动时依赖 ensureRunning 拉起 QQ音乐 +
+     * 4/9/15/25s 重发覆盖 hook 就绪窗口（与点歌/控制同一机制）。
+     */
+    public void playFolder(int folderType) {
+        String url = mScheme + "://?action=" + ACTION_FOLDER_PLAY + "&m0=" + folderType;
+        String desc = "playFolder(" + folderType
+                + (folderType == FOLDER_FAVOURITE ? "=收藏" : folderType == FOLDER_PERSONAL_RADIO ? "=推荐电台" : "")
+                + ")";
+        boolean started = ensureRunning();
+        sendSchemeBroadcast(url, desc);
+        if (started) {
             scheduleRetry(url, desc + " 冷启动重发");
         }
     }

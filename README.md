@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.6.4）
+## 支持列表（v1.7.0）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -45,7 +45,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 |---|---|
 | `com.syu.voice`（车助理） | 音乐工具白名单 + `MusicTool` 动态代理（把指令转发给 QQ音乐进程） |
 | `com.tencent.qqmusiccar/pad/qq`（QQ音乐） | 适配其第三方 AIDL 接口：`voicePlay()` 后台搜索直接播放、`skipToNext/skipToPrevious/pauseMusic` 等播放控制；兼容服务绑定状态，实例未就绪时命令缓存补发 |
-| `com.txznet.txz`（TXZ 语音主服务） | 适配 TXZ 语音音乐命令路由，使"上一曲/下一曲/暂停"走 MusicTool 适配链路而不是系统媒体键（v1.3.2） |
+| `com.txznet.txz`（TXZ 语音主服务） | 适配 TXZ 语音音乐命令路由，使"上一曲/下一曲/暂停"走 MusicTool 适配链路而不是系统媒体键（v1.3.2）；v1.7.0 起 hook 云知声 NLU 结果转换出口，本地补抓"播放收藏的歌单/推荐歌单/随便听听"等云端不识别的歌单话术 |
 
 关键类（接口来源：厂商开放的第三方 AIDL / SDK 集成接口）：
 
@@ -60,6 +60,8 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 ## 功能
 
 - **语音点歌**：播放《XXX》/ 播放某歌手的歌 → QQ音乐 **后台搜索直接播放**（不弹搜索框）
+- **语音歌单**（v1.7.0，QQ音乐HD/车机版）："播放收藏的歌单 / 我喜欢的音乐" → 播 QQ音乐「我喜欢」；"播放推荐歌单 / 每日推荐 / 随便听听 / 来点好听的" → QQ音乐个人电台智能推荐流；"收藏这首歌 / 取消收藏" → 收藏当前播放歌曲
+  - 注：播放「我喜欢」需在 QQ音乐HD 登录账号；歌单话术经 TXZ NLU 本地拦截补抓（云端语料无"歌单"概念，原版会回"不知道你在说啥"）
 - **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 适配 PlayerService 绑定状态）
 - **自动拉起**：QQ音乐未运行时先启动再操作（v1.3.1）
 - **播放状态上报**：isPlaying 保底 true + onStatusChange 主动上报，维持 TXZ 音乐场景（v1.3.2）
@@ -81,18 +83,18 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10604
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10700
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.6.4
+        └── java/com/syu/voice/hook/   # v1.7.0
             ├── MainHook.java         # Xposed 入口（进程分流）
-            ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2）
-            ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发）
-            ├── ApiHolder.java        # ApiMethodsImpl 实例持有 + voicePlay/控制
+            ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单话术拦截）
+            ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单）
+            ├── ApiHolder.java        # ApiMethodsImpl 实例持有 + voicePlay/控制/playFolderType
             ├── MusicToolInject.java  # 白名单注入（5 个目标包名）
-            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报）
-            ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning）
+            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.7.0 收藏/推荐）
+            ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；v1.7.0 action=30）
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录）
             ├── ContextHolder.java    # Application Context 持有
             ├── UpdateManager.java    # GitHub Releases 检查/下载/安装
@@ -147,7 +149,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.6.4 | 修复冷启动点歌不播放：QQ音乐被强停后语音点歌只打开不播放（广播早于播放器进程 hook 就绪被原生抢走）；冷启动自动 4/9/15/25s 重发广播，拦截端 20s/6s 去重防重复（当前版本） |
+| v1.7.0 | 新增语音歌单："播放收藏的歌单/我喜欢的音乐"→QQ音乐「我喜欢」（playFolderType 201，需登录）；"播放推荐歌单/每日推荐/随便听听"→QQ音乐个人电台推荐流（playFolderType 104）；"收藏/取消收藏这首歌"接线原生 m0=5/6。TXZ 侧 hook 云知声 NLU 转换出口本地补抓歌单话术（云端语料无"歌单"概念，原版回"不知道你在说啥"）（当前版本） |
+| v1.6.4 | 修复冷启动点歌不播放：QQ音乐被强停后语音点歌只打开不播放（广播早于播放器进程 hook 就绪被原生抢走）；冷启动自动 4/9/15/25s 重发广播，拦截端 20s/6s 去重防重复 |
 | v1.6.3 | 可观测性修复：logcat 导出 5000→30 万行；播放器进程文件日志不落盘修复；解码端自愈（旧广播空格还原 '+'）；导出补 /data/media/0 等候选路径 |
 | v1.6.2 | 修复点歌 Base64 未 URL 编码：关键词 Base64 含 `+`/`/` 时（如"毛不易"→`5q+b5LiN5piT`）`+` 被解析为空格导致解码乱码、播错歌；周杰伦等不含特殊字符的恰好正常 |
 | v1.6.1 | 修复导出日志失败/残缺无法识别：结果三态化弹窗（✅成功/⚠️不完整缺root/❌失败）+ Magisk 授权指引，无 root 不再"假成功" |

@@ -185,6 +185,40 @@ public final class ApiHolder {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 歌单/电台播放（v1.7.0 新增）
+    //
+    // 反编译 QQ音乐HD_6.9.0.7 确认 ApiMethodsImpl.playFolderType(folderId, type, index, cb)
+    // 服务端 ThirdApiDataSourceBridge.playFolderType 仅处理两种 type：
+    //   201 -> playFavourite：播放"我喜欢/收藏"的歌曲（需登录 QQ音乐，未登录返回 code=7）
+    //   104 -> ControlForThird.f()：播放个人电台（QQ音乐智能推荐流，"随便听听/推荐歌单"语义）
+    // folderId 服务端不使用（仅非空校验），按官方 ThirdApiDataSource 的 id 格式 "type|sub" 传。
+    // ------------------------------------------------------------------
+
+    public static final int FOLDER_FAVOURITE = 201;
+    public static final int FOLDER_PERSONAL_RADIO = 104;
+
+    /** 播放歌单/电台：201=我喜欢的收藏歌曲，104=个人电台（推荐流） */
+    public static boolean playFolder(int folderType) {
+        Object api = sApi;
+        if (api == null) {
+            LogManager.w(TAG, "playFolder(" + folderType + ") 失败：ApiMethodsImpl 未就绪");
+            return false;
+        }
+        try {
+            String folderId = folderType + "|0";
+            Object callback = makeCallback("playFolder(" + folderType + ")");
+            XposedHelpers.callMethod(api, "playFolderType", folderId, folderType, 0, callback);
+            LogManager.i(TAG, "playFolderType 已发出 -> type=" + folderType
+                    + (folderType == FOLDER_FAVOURITE ? "（我喜欢/收藏）"
+                    : folderType == FOLDER_PERSONAL_RADIO ? "（个人电台/推荐）" : ""));
+            return true;
+        } catch (Throwable t) {
+            LogManager.e(TAG, "playFolder(" + folderType + ") 调用失败", t);
+            return false;
+        }
+    }
+
     /**
      * 解析广播里的 search_key。发送端（v1.6.2+）= 标准 Base64.NO_WRAP 再 URLEncoder，
      * getQueryParameter 后拿到的就是标准 Base64（含 '+' '/' '='）。

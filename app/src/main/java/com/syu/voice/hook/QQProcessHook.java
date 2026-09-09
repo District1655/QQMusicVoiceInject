@@ -51,6 +51,7 @@ public final class QQProcessHook {
     private static volatile String sPendingQuery;
     private static volatile int sPendingCmd = -2;   // -2 表示无 pending 控制
     private static volatile long sPendingExtra;
+    private static volatile int sPendingFolder = -2; // -2 表示无 pending 歌单（v1.7.0：201收藏/104电台）
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean sPolling;
     private static volatile int sPollAttempts;
@@ -62,6 +63,8 @@ public final class QQProcessHook {
     private static volatile int sLastCmd = -2;      // -2 表示尚无控制指令
     private static volatile long sLastCmdExtra;
     private static volatile long sLastCmdTime;
+    private static volatile int sLastFolder = -2;   // -2 表示尚无歌单指令（v1.7.0）
+    private static volatile long sLastFolderTime;
 
     private QQProcessHook() {
     }
@@ -307,6 +310,33 @@ public final class QQProcessHook {
                 startPolling();
                 return true; // 消费广播，由 pending 兜底
             }
+            if (action == 30) {
+                // 歌单/电台播放（v1.7.0）：m0=201 我喜欢/收藏，m0=104 个人电台（推荐流）
+                String m0 = uri.getQueryParameter("m0");
+                int folderType = -1;
+                try {
+                    folderType = Integer.parseInt(m0);
+                } catch (Throwable ignored) {
+                }
+                LogManager.i(TAG, "[拦截] 歌单播放 action=30 m0=" + m0);
+                // 去重：冷启动重发的相同歌单指令 6 秒内只执行一次
+                long now = SystemClock.uptimeMillis();
+                if (folderType == sLastFolder && now - sLastFolderTime < 6000) {
+                    LogManager.i(TAG, "[去重] " + (now - sLastFolderTime)
+                            + "ms 内相同歌单指令已处理，消费重发广播: folderType=" + folderType);
+                    return true;
+                }
+                sLastFolder = folderType;
+                sLastFolderTime = now;
+                if (ApiHolder.playFolder(folderType)) {
+                    LogManager.i(TAG, ">>> 已走内部 API 歌单播放: " + folderType);
+                    return true;
+                }
+                LogManager.w(TAG, "playFolder 未就绪，缓存命令待实例就绪后补发");
+                sPendingFolder = folderType;
+                startPolling();
+                return true; // 消费广播（原生不识别 action=30，也必须消费），由 pending 兜底
+            }
         } catch (Throwable t) {
             LogManager.e(TAG, "拦截 action=" + action + " 异常", t);
         }
@@ -342,11 +372,12 @@ public final class QQProcessHook {
                 LogManager.w(TAG, "等待 ApiMethodsImpl 就绪超时（20s），丢弃 pending 命令");
                 sPendingQuery = null;
                 sPendingCmd = -2;
+                sPendingFolder = -2;
             }
         }
     };
 
-    /** 实例就绪后补发缓存的点歌/控制命令 */
+    /** 实例就绪后补发缓存的点歌/控制/歌单命令 */
     private static void maybeFlushPending() {
         if (!ApiHolder.isReady()) {
             return;
@@ -363,6 +394,12 @@ public final class QQProcessHook {
             long extra = sPendingExtra;
             LogManager.i(TAG, "[pending] 补发播放控制 -> cmd=" + cmd + " extra=" + extra);
             ApiHolder.control(cmd, extra);
+        }
+        int folder = sPendingFolder;
+        if (folder != -2) {
+            sPendingFolder = -2;
+            LogManager.i(TAG, "[pending] 补发歌单播放 -> folderType=" + folder);
+            ApiHolder.playFolder(folder);
         }
     }
 }

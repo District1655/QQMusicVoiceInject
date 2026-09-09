@@ -152,13 +152,15 @@ public final class QQMusicToolProxy {
                         return null;
 
                     case "playRandom":
-                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: playRandom");
+                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: playRandom（随便听听/推荐）");
                         if (useQQController() && qq() != null) {
-                            qq().controlPlay(QQMusicController.CTRL_MODE_SHUFFLE, 100);
-                            qq().controlPlay(QQMusicController.CTRL_PLAY, 100);
+                            // v1.7.0：QQ音乐个人电台（智能推荐流）即"随便听听"，
+                            // 比"切随机模式播当前列表"更贴合语音语义且不依赖已有列表
+                            qq().playFolder(QQMusicController.FOLDER_PERSONAL_RADIO);
                         } else {
                             transport().playFromMediaId("__random__", null);
                         }
+                        notifyStatus(1); // STATE_START_PLAY
                         return null;
 
                     case "playMusic":
@@ -177,10 +179,31 @@ public final class QQMusicToolProxy {
                         LogManager.d(TAG, "[" + mPkg + "] getCurrentMusicModel -> " + describeModel(model));
                         return model;
 
-                    case "favourMusic":
-                    case "unfavourMusic":
                     case "playFavourMusic":
-                        LogManager.w(TAG, "[" + mPkg + "] " + name + " 无公开AIDL，空实现");
+                        // v1.7.0：播放"我喜欢/收藏"的歌曲 -> QQ音乐 playFolderType(201)
+                        // （需在 QQ音乐HD 登录账号，未登录时 QQ 回调 onError code=7）
+                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: playFavourMusic（播放收藏）");
+                        if (useQQController() && qq() != null) {
+                            qq().playFolder(QQMusicController.FOLDER_FAVOURITE);
+                        } else {
+                            transport().play();
+                        }
+                        notifyStatus(1); // STATE_START_PLAY
+                        return null;
+
+                    case "favourMusic":
+                        // 收藏当前播放歌曲：QQ音乐原生广播 m0=5 即支持
+                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: favourMusic（收藏当前歌曲）");
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_FAV, 100);
+                        }
+                        return null;
+
+                    case "unfavourMusic":
+                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: unfavourMusic（取消收藏当前歌曲）");
+                        if (useQQController() && qq() != null) {
+                            qq().controlPlay(QQMusicController.CTRL_UNFAV, 100);
+                        }
                         return null;
 
                     case "switchModeLoopAll":
