@@ -21,23 +21,45 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * v1.7.0 新增：NLU 本地拦截（歌单话术）。反编译 TXZ_2.9.8 确认云知声音乐技能
  * （TextYunzhishengImpl.parseOLMusic）只支持 scene=="收藏" → playFavourMusic、
- * SEARCH_RANDOM → playRandom，语料中没有"歌单/推荐歌单"概念——"播放收藏的歌单"、
- * "播放推荐歌单"等话术云端 NLU 不识别为音乐域，语音助手直接回"不知道你在说啥"。
- * hook yzsDataToTxzScene（云知声结果 → TXZ 场景 json 的转换出口），在结果
- * 未命中音乐域时按 ASR 原文本地匹配：
- *   收藏/我喜欢 + 音乐语境 → 伪造 {"scene":"music","action":"playFavourMusic"}
- *   推荐/每日推荐/随便听听 → 伪造 {"scene":"music","action":"playRandom"}
- * 之后链路与正常语音指令完全一致：music.b → MusicTool 代理 → QQ音乐 playFolderType。
+ * SEARCH_RANDOM → playRandom，语料中没有"歌单/排行榜/每日30首"概念——这类话术
+ * 云端 NLU 要么不识别为音乐域，要么误识别成点歌（实测"收藏的歌单"被 ASR 成
+ * "收藏的歌丹"后当歌名搜索）。hook yzsDataToTxzScene（云知声结果 → TXZ 场景
+ * json 的转换出口），按 ASR 原文本地匹配并伪造场景 json：
+ *   收藏/我喜欢 + 音乐语境（非"这首歌"）→ playFavourMusic → QQ playFolderType(201)
+ *   猜你喜欢/推荐…/随便听听/好听的       → playRandom       → QQ playFolderType(104)
+ *   每日30首/每日推荐                     → play + 哨兵 model → QQ getSongList(108)+playSongMid
+ *   排行榜/榜单/热歌榜…                   → play + 哨兵 model → QQ getFolderList(2)+getSongList(102)
+ * 之后链路与正常语音指令完全一致：music.b → MusicTool 代理 → QQ音乐内部 API。
+ *
+ * v1.7.1：云端已识别为音乐域时，若是收藏/取消收藏当前歌曲（favourMusic）不干预，
+ * 其余（误识别成点歌等）一律按本地歌单话术覆盖；新增排行榜/每日30首两类哨兵路由。
  */
 public final class TXZHook {
 
     public static final String TAG = MainHook.TAG;
+
+    /** 哨兵 model.title：车助理进程 QQMusicToolProxy.playMusic 识别后路由到对应歌单，不会进搜索 */
+    public static final String SENTINEL_DAILY30 = "@@fyt_playlist_daily30@@";
+    public static final String SENTINEL_RANK = "@@fyt_playlist_rank@@";
 
     private static final String TEXT_IMPL =
             "com.txznet.txz.component.text.yunzhisheng_3_0.TextYunzhishengImpl";
     private static final String VOICE_PARSE_DATA = "com.txz.ui.voice.VoiceData$VoiceParseData";
 
     private TXZHook() {
+    }
+
+    /** 本地话术匹配结果：action=MusicTool 方法名；sentinel 非空时伪造 play 指令并把哨兵放 model.title */
+    static final class PlaylistMatch {
+        final String action;
+        final String sentinel;
+        final String desc;
+
+        PlaylistMatch(String action, String sentinel, String desc) {
+            this.action = action;
+            this.sentinel = sentinel;
+            this.desc = desc;
+        }
     }
 
     public static void hook(ClassLoader cl) {
@@ -59,7 +81,7 @@ public final class TXZHook {
     }
 
     /**
-     * v1.7.0：hook 云知声 NLU 结果转换出口，本地补抓"歌单/收藏/推荐"话术。
+     * hook 云知声 NLU 结果转换出口，本地补抓"歌单/收藏/排行榜/每日30首"话术。
      * yzsDataToTxzScene 是私有静态方法，入参/返回均为 VoiceData$VoiceParseData：
      *   strText      —— ASR 原始文本
      *   strVoiceData —— 转换后的 TXZ 场景 json（{"scene":"music","action":"play",...}）
@@ -81,52 +103,84 @@ public final class TXZHook {
                                 if (text == null || text.isEmpty()) {
                                     return;
                                 }
-                                // 云端 NLU 已识别为音乐指令（点歌/收藏当前歌曲等）时不干预
+                                PlaylistMatch match = matchPlaylistAction(text);
+                                if (match == null) {
+                                    return;
+                                }
+                                // 云端已识别为音乐域时：收藏/取消收藏当前歌曲（favourMusic）不干预；
+                                // 其余（如把"收藏的歌单"误识别成点歌）按本地歌单话术覆盖
                                 if (voice != null && voice.contains("\"scene\":\"music\"")) {
-                                    return;
+                                    if (voice.contains("favourMusic")) {
+                                        return;
+                                    }
                                 }
-                                String action = matchPlaylistAction(text);
-                                if (action == null) {
-                                    return;
+                                String json;
+                                if (match.sentinel != null) {
+                                    // 排行榜/每日30首：MusicTool 无对应方法，伪造点歌指令，
+                                    // model.title 放哨兵词，车助理侧 playMusic 检测哨兵后直放对应歌单。
+                                    // artist/album/keywords 字段补齐为云知声正常点歌时的完整模型结构，
+                                    // 避免 TXZ 解析侧字段缺失（参见 module.ae.c 的 t() 模型解析）。
+                                    json = "{\"scene\":\"music\",\"action\":\"play\",\"text\":\""
+                                            + escapeJson(text)
+                                            + "\",\"model\":{\"title\":\"" + match.sentinel
+                                            + "\",\"artist\":[],\"album\":\"\",\"keywords\":[]}}";
+                                } else {
+                                    json = "{\"scene\":\"music\",\"action\":\"" + match.action
+                                            + "\",\"text\":\"" + escapeJson(text) + "\"}";
                                 }
-                                String json = "{\"scene\":\"music\",\"action\":\"" + action
-                                        + "\",\"text\":\"" + escapeJson(text) + "\"}";
                                 XposedHelpers.setObjectField(data, "strVoiceData", json);
                                 LogManager.i(TAG, "NLU 本地拦截歌单话术: \"" + text
-                                        + "\" -> music/" + action);
+                                        + "\" -> " + match.desc
+                                        + (voice != null && voice.contains("\"scene\":\"music\"")
+                                        ? "（覆盖云端音乐域结果）" : ""));
                             } catch (Throwable t) {
                                 LogManager.e(TAG, "NLU 歌单拦截处理异常: " + t.getMessage(), t);
                             }
                         }
                     });
-            LogManager.i(TAG, "TXZ hook: NLU 歌单话术本地拦截已注册（收藏/我喜欢/推荐/随便听听）");
+            LogManager.i(TAG, "TXZ hook: NLU 歌单话术本地拦截已注册（收藏/猜你喜欢/每日30首/排行榜）");
         } catch (Throwable t) {
             LogManager.e(TAG, "TXZ hook NLU 歌单拦截失败（TXZ 版本可能不同）: " + t.getMessage(), t);
         }
     }
 
     /**
-     * 本地话术匹配。
-     * 命中条件刻意收窄，避免误伤导航/电台等其他域：
-     * - 收藏类：含"收藏/我喜欢/喜欢的"且含音乐语境字（歌/音乐/曲/首）；
-     * - 推荐类：含"推荐"且含音乐语境字，或整句为"每日推荐/每日30首/随便听听"类常用话术。
-     * （"收藏这首歌/我喜欢这首歌"等收藏当前歌曲话术云端可正常识别为音乐域，
-     *   在调用本方法前已被 scene=music 判断跳过。）
+     * 本地话术匹配（命中条件刻意收窄，避免误伤导航/电台等其他域）。
+     * 优先级：排行榜 > 每日30首 > 收藏 > 猜你喜欢/推荐。
+     * "收藏这首歌/我喜欢这首歌"等收藏当前歌曲话术排除（云端可正常识别为 favourMusic）。
      */
-    static String matchPlaylistAction(String text) {
+    static PlaylistMatch matchPlaylistAction(String text) {
         boolean musicCtx = text.contains("歌") || text.contains("音乐")
                 || text.contains("曲") || text.contains("首");
-        if (text.contains("收藏") || text.contains("我喜欢") || text.contains("喜欢的")) {
-            if (musicCtx) {
-                return "playFavourMusic";
-            }
+
+        // 1) 排行榜：排行榜/榜单，或"热歌榜/新歌榜/飙升榜/巅峰榜/音乐榜"等带"榜"的音乐说法
+        if (text.contains("排行榜") || text.contains("榜单")
+                || (text.contains("榜") && (text.contains("排行") || musicCtx))) {
+            return new PlaylistMatch("play", SENTINEL_RANK, "music/排行榜");
         }
-        if ((text.contains("推荐") && musicCtx)
-                || text.contains("每日30首") || text.contains("每日三十首")
-                || text.contains("每天30首") || text.contains("每日推荐")
+
+        // 2) 每日30首：每日/每天 + 30/三十/推荐/音乐语境
+        if ((text.contains("每日") || text.contains("每天"))
+                && (text.contains("30") || text.contains("三十")
+                || text.contains("推荐") || musicCtx)) {
+            return new PlaylistMatch("play", SENTINEL_DAILY30, "music/每日30首");
+        }
+
+        // 3) 收藏/我喜欢（播放整个收藏列表）：排除"这首/当前/这个"（那是收藏当前歌曲）；
+        //    "播放我喜欢/播放喜欢的"即使不带"歌"字也按收藏列表处理
+        if ((text.contains("收藏") || text.contains("我喜欢") || text.contains("喜欢的"))
+                && !text.contains("这首") && !text.contains("当前") && !text.contains("这个")
+                && (musicCtx || text.contains("歌单")
+                || text.contains("我喜欢") || text.contains("喜欢的"))) {
+            return new PlaylistMatch("playFavourMusic", null, "music/playFavourMusic(收藏歌曲)");
+        }
+
+        // 4) 猜你喜欢 / 推荐 / 随便听听（个人电台 104，即首页"For You 猜你喜欢"）
+        if (text.contains("猜你喜欢")
+                || (text.contains("推荐") && musicCtx)
                 || text.contains("随便听听") || text.contains("随便来")
                 || text.contains("来点好听") || text.contains("好听的")) {
-            return "playRandom";
+            return new PlaylistMatch("playRandom", null, "music/playRandom(猜你喜欢)");
         }
         return null;
     }

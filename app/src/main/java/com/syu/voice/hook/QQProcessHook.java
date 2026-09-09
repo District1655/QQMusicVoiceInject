@@ -51,7 +51,7 @@ public final class QQProcessHook {
     private static volatile String sPendingQuery;
     private static volatile int sPendingCmd = -2;   // -2 表示无 pending 控制
     private static volatile long sPendingExtra;
-    private static volatile int sPendingFolder = -2; // -2 表示无 pending 歌单（v1.7.0：201收藏/104电台）
+    private static volatile int sPendingFolder = -2; // -2 表示无 pending 歌单（201收藏/104猜你喜欢/108每日30首/2排行榜）
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean sPolling;
     private static volatile int sPollAttempts;
@@ -289,6 +289,23 @@ public final class QQProcessHook {
                     extra = Long.parseLong(m1);
                 } catch (Throwable ignored) {
                 }
+                // v1.7.1 修复：m0=5(收藏当前歌曲)/6(取消收藏) 原生 receiver 自己处理
+                //（MusicPlayerHelper 收藏红心），模块 action=20 一旦消费原生就收不到，
+                // 而 ApiHolder.control 也不实现 5/6 → "收藏这首歌"曾被拦截破坏。这里放行给原生，
+                // 但 6s 内的冷启动重发广播直接消费掉（收藏指令幂等，无需重复投递）。
+                if (cmd == 5 || cmd == 6) {
+                    long favNow = SystemClock.uptimeMillis();
+                    if (cmd == sLastCmd && extra == sLastCmdExtra && favNow - sLastCmdTime < 6000) {
+                        LogManager.i(TAG, "[去重] 收藏类指令重发，消费不重复投递原生: cmd=" + cmd);
+                        return true;
+                    }
+                    sLastCmd = cmd;
+                    sLastCmdExtra = extra;
+                    sLastCmdTime = favNow;
+                    LogManager.i(TAG, "[放行] action=20 m0=" + cmd
+                            + "（" + (cmd == 5 ? "收藏" : "取消收藏") + "当前歌曲）交原生 receiver 处理");
+                    return false;
+                }
                 LogManager.i(TAG, "[拦截] 播放控制 action=20 m0=" + m0 + " m1=" + m1);
                 // 去重：冷启动重发的相同控制指令 6 秒内只执行一次
                 long now = SystemClock.uptimeMillis();
@@ -311,7 +328,8 @@ public final class QQProcessHook {
                 return true; // 消费广播，由 pending 兜底
             }
             if (action == 30) {
-                // 歌单/电台播放（v1.7.0）：m0=201 我喜欢/收藏，m0=104 个人电台（推荐流）
+                // 歌单播放（v1.7.1）：m0=201 收藏歌曲，104 猜你喜欢（个人电台），
+                // 108 每日30首（取列表→playSongMid），2 排行榜（取榜单→取歌曲→播放）
                 String m0 = uri.getQueryParameter("m0");
                 int folderType = -1;
                 try {
@@ -328,11 +346,11 @@ public final class QQProcessHook {
                 }
                 sLastFolder = folderType;
                 sLastFolderTime = now;
-                if (ApiHolder.playFolder(folderType)) {
+                if (ApiHolder.playFolderCmd(folderType)) {
                     LogManager.i(TAG, ">>> 已走内部 API 歌单播放: " + folderType);
                     return true;
                 }
-                LogManager.w(TAG, "playFolder 未就绪，缓存命令待实例就绪后补发");
+                LogManager.w(TAG, "playFolderCmd 未就绪，缓存命令待实例就绪后补发");
                 sPendingFolder = folderType;
                 startPolling();
                 return true; // 消费广播（原生不识别 action=30，也必须消费），由 pending 兜底
@@ -399,7 +417,7 @@ public final class QQProcessHook {
         if (folder != -2) {
             sPendingFolder = -2;
             LogManager.i(TAG, "[pending] 补发歌单播放 -> folderType=" + folder);
-            ApiHolder.playFolder(folder);
+            ApiHolder.playFolderCmd(folder);
         }
     }
 }

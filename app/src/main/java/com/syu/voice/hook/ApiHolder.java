@@ -197,8 +197,32 @@ public final class ApiHolder {
 
     public static final int FOLDER_FAVOURITE = 201;
     public static final int FOLDER_PERSONAL_RADIO = 104;
+    /** v1.7.1：每日30首（getSongList type=108，folderId 传 "0"，服务端映射 "202|0"） */
+    public static final int FOLDER_DAILY_30 = 108;
+    /** v1.7.1：排行榜（getFolderList type=2 取首个榜单 → getSongList type=102） */
+    public static final int FOLDER_RANK = 2;
 
-    /** 播放歌单/电台：201=我喜欢的收藏歌曲，104=个人电台（推荐流） */
+    /**
+     * 歌单指令统一入口（v1.7.1）：action=30 的 m0 即 cmd。
+     * 201/104 走官方 playFolderType 直放；108/2 走"取列表 mid → playSongMid"链路。
+     */
+    public static boolean playFolderCmd(int cmd) {
+        switch (cmd) {
+            case FOLDER_FAVOURITE:
+                return playFolder(FOLDER_FAVOURITE);
+            case FOLDER_PERSONAL_RADIO:
+                return playFolder(FOLDER_PERSONAL_RADIO);
+            case FOLDER_DAILY_30:
+                return playFolderSongs(FOLDER_DAILY_30, "0", "每日30首");
+            case FOLDER_RANK:
+                return playRank();
+            default:
+                LogManager.w(TAG, "playFolderCmd: 未知歌单指令 " + cmd);
+                return false;
+        }
+    }
+
+    /** 播放歌单/电台：201=我喜欢/收藏歌曲，104=猜你喜欢（个人电台推荐流） */
     public static boolean playFolder(int folderType) {
         Object api = sApi;
         if (api == null) {
@@ -368,5 +392,211 @@ public final class ApiHolder {
         } catch (Throwable t) {
             return "dump失败:" + t.getMessage();
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 多歌单播放（v1.7.1）：每日30首、排行榜
+    //
+    // 官方 AIDL 能力（ThirdApiDataSourceBridge$C04481 实测分发）：
+    //   getSongList(folderId, type, page)：
+    //     type=108 folderId="0" -> 服务端映射 "202|0" -> getFolderSongList（每日30首/百万收藏等推荐文件夹）
+    //     type=102 folderId=榜单id -> getRankSongList（排行榜歌曲）
+    //     type=201 -> 我喜欢列表；type=202 -> 最近播放；type=104 -> 猜你喜欢电台当前页
+    //   getFolderList(folderId, type, page)：
+    //     type=2 -> getRankList（排行榜文件夹列表，FolderInfo.id 即榜单 id，mainTitle 即榜单名）
+    //   成功回调 Bundle：code=0, data=Data.Song/Data.FolderInfo 列表的 gson JSON，hasMore
+    //   拿到 mid 列表后调 playSongMid(mids, cb) 整列表播放。
+    // ------------------------------------------------------------------
+
+    /** 取歌单歌曲 mid 列表并整列表播放（每日30首 type=108 等） */
+    public static boolean playFolderSongs(final int type, final String folderId, final String desc) {
+        Object api = sApi;
+        if (api == null) {
+            LogManager.w(TAG, desc + "：ApiMethodsImpl 未就绪");
+            return false;
+        }
+        try {
+            Object cb = makeSongListCallback(desc);
+            XposedHelpers.callMethod(api, "getSongList", folderId, type, 0, cb);
+            LogManager.i(TAG, "getSongList 已发出 -> " + desc + " type=" + type + " folderId=" + folderId);
+            return true;
+        } catch (Throwable t) {
+            LogManager.e(TAG, desc + " getSongList 调用失败", t);
+            return false;
+        }
+    }
+
+    /** 排行榜：先取榜单列表，选第一个（官方默认序，通常为热门榜），再取歌曲播放 */
+    public static boolean playRank() {
+        Object api = sApi;
+        if (api == null) {
+            LogManager.w(TAG, "排行榜：ApiMethodsImpl 未就绪");
+            return false;
+        }
+        try {
+            Object cb = makeRankFolderCallback();
+            XposedHelpers.callMethod(api, "getFolderList", "0", FOLDER_RANK, 0, cb);
+            LogManager.i(TAG, "getFolderList 已发出 -> 排行榜(type=2)");
+            return true;
+        } catch (Throwable t) {
+            LogManager.e(TAG, "排行榜 getFolderList 调用失败", t);
+            return false;
+        }
+    }
+
+    /** 从 getSongList 成功 Bundle（data = Data.Song 列表 JSON）提取歌曲 mid */
+    private static java.util.List<String> extractMids(android.os.Bundle b) {
+        java.util.List<String> mids = new java.util.ArrayList<String>();
+        if (b == null) {
+            return mids;
+        }
+        try {
+            String data = b.getString("data");
+            if (data == null || data.isEmpty() || "null".equals(data)) {
+                return mids;
+            }
+            org.json.JSONArray arr = new org.json.JSONArray(data);
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String mid = o.optString("mid", null);
+                if (mid != null && !mid.isEmpty() && !"null".equals(mid)) {
+                    mids.add(mid);
+                }
+            }
+        } catch (Throwable t) {
+            LogManager.e(TAG, "extractMids 解析失败", t);
+        }
+        return mids;
+    }
+
+    /** 用 mid 列表整列表播放 */
+    private static void playMids(java.util.List<String> mids, String desc) {
+        if (mids == null || mids.isEmpty()) {
+            LogManager.w(TAG, desc + "：歌曲 mid 列表为空，放弃播放");
+            return;
+        }
+        Object api = sApi;
+        if (api == null) {
+            LogManager.w(TAG, desc + "：ApiMethodsImpl 未就绪，无法 playSongMid");
+            return;
+        }
+        try {
+            Object cb = makeCallback(desc + " playSongMid");
+            XposedHelpers.callMethod(api, "playSongMid", new java.util.ArrayList<String>(mids), cb);
+            LogManager.i(TAG, desc + " -> playSongMid 已发出，共 " + mids.size() + " 首");
+        } catch (Throwable t) {
+            LogManager.e(TAG, desc + " playSongMid 调用失败", t);
+        }
+    }
+
+    /** getSongList 回调：成功取 mid 列表 → playSongMid；失败落日志 */
+    private static Object makeSongListCallback(final String desc) {
+        if (sCl == null) {
+            return null;
+        }
+        try {
+            Class<?> cbCls = XposedHelpers.findClass(
+                    "com.tencent.qqmusic.third.api.contract.IQQMusicApiCallback", sCl);
+            return Proxy.newProxyInstance(sCl, new Class<?>[]{cbCls}, new InvocationHandler() {
+                @Override
+                public Object invoke(Object proxy, Method method, Object[] args) {
+                    String name = method.getName();
+                    try {
+                        if ("onSuccess".equals(name) && args != null && args.length > 0
+                                && args[0] instanceof android.os.Bundle) {
+                            java.util.List<String> mids = extractMids((android.os.Bundle) args[0]);
+                            LogManager.i(TAG, "[" + desc + "] onSuccess：取到 " + mids.size() + " 首");
+                            playMids(mids, desc);
+                        } else if ("onError".equals(name)) {
+                            LogManager.w(TAG, "[" + desc + "] onError code="
+                                    + (args != null && args.length > 0 ? args[0] : "?")
+                                    + " msg=" + (args != null && args.length > 1 ? args[1] : "?"));
+                        }
+                    } catch (Throwable t) {
+                        LogManager.e(TAG, "[" + desc + "] 回调处理异常", t);
+                    }
+                    return defaultReturnValue(method);
+                }
+            });
+        } catch (Throwable t) {
+            LogManager.e(TAG, "makeSongListCallback 失败", t);
+            return null;
+        }
+    }
+
+    /** getFolderList(排行榜) 回调：取第一个榜单 id → getSongList(type=102) → 播放 */
+    private static Object makeRankFolderCallback() {
+        if (sCl == null) {
+            return null;
+        }
+        try {
+            Class<?> cbCls = XposedHelpers.findClass(
+                    "com.tencent.qqmusic.third.api.contract.IQQMusicApiCallback", sCl);
+            return Proxy.newProxyInstance(sCl, new Class<?>[]{cbCls}, new InvocationHandler() {
+                @Override
+                public Object invoke(Object proxy, Method method, Object[] args) {
+                    String name = method.getName();
+                    try {
+                        if ("onSuccess".equals(name) && args != null && args.length > 0
+                                && args[0] instanceof android.os.Bundle) {
+                            android.os.Bundle b = (android.os.Bundle) args[0];
+                            String data = b.getString("data");
+                            LogManager.i(TAG, "[排行榜] onSuccess 榜单列表: "
+                                    + (data != null && data.length() > 150 ? data.substring(0, 150) + "..." : data));
+                            String rankId = null;
+                            String rankTitle = null;
+                            if (data != null) {
+                                org.json.JSONArray arr = new org.json.JSONArray(data);
+                                for (int i = 0; i < arr.length(); i++) {
+                                    org.json.JSONObject o = arr.optJSONObject(i);
+                                    if (o == null) {
+                                        continue;
+                                    }
+                                    String id = o.optString("id", null);
+                                    if (id != null && !id.isEmpty() && !"null".equals(id)) {
+                                        rankId = id;
+                                        rankTitle = o.optString("mainTitle", "排行榜");
+                                        break;
+                                    }
+                                }
+                            }
+                            if (rankId == null) {
+                                LogManager.w(TAG, "[排行榜] 榜单列表为空或无 id");
+                            } else {
+                                LogManager.i(TAG, "[排行榜] 选中首个榜单：" + rankTitle + " id=" + rankId);
+                                playFolderSongs(102, rankId, "排行榜·" + rankTitle);
+                            }
+                        } else if ("onError".equals(name)) {
+                            LogManager.w(TAG, "[排行榜] onError code="
+                                    + (args != null && args.length > 0 ? args[0] : "?")
+                                    + " msg=" + (args != null && args.length > 1 ? args[1] : "?"));
+                        }
+                    } catch (Throwable t) {
+                        LogManager.e(TAG, "[排行榜] 回调处理异常", t);
+                    }
+                    return defaultReturnValue(method);
+                }
+            });
+        } catch (Throwable t) {
+            LogManager.e(TAG, "makeRankFolderCallback 失败", t);
+            return null;
+        }
+    }
+
+    private static Object defaultReturnValue(Method method) {
+        Class<?> ret = method.getReturnType();
+        if (ret == boolean.class) {
+            return Boolean.FALSE;
+        }
+        if (ret == int.class) {
+            return Integer.valueOf(0);
+        }
+        if (ret == long.class) {
+            return Long.valueOf(0L);
+        }
+        return null;
     }
 }

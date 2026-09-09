@@ -164,12 +164,22 @@ public final class QQMusicToolProxy {
                         return null;
 
                     case "playMusic":
-                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: playMusic "
-                                + describeModel(args != null && args.length > 0 ? args[0] : null));
+                        Object pmModel = args != null && args.length > 0 ? args[0] : null;
+                        LogManager.i(TAG, "[" + mPkg + "] 语音指令: playMusic " + describeModel(pmModel));
                         if (useQQController() && qq() != null) {
-                            qq().searchAndPlay(extractQuery(args != null && args.length > 0 ? args[0] : null));
+                            // v1.7.1：TXZHook 伪造的哨兵 title -> 直接播指定歌单，不走搜索
+                            String title = modelTitle(pmModel);
+                            if (TXZHook.SENTINEL_DAILY30.equals(title)) {
+                                LogManager.i(TAG, "[" + mPkg + "] 哨兵路由 -> 每日30首");
+                                qq().playFolder(QQMusicController.FOLDER_DAILY_30);
+                            } else if (TXZHook.SENTINEL_RANK.equals(title)) {
+                                LogManager.i(TAG, "[" + mPkg + "] 哨兵路由 -> 排行榜");
+                                qq().playFolder(QQMusicController.FOLDER_RANK);
+                            } else {
+                                qq().searchAndPlay(extractQuery(pmModel));
+                            }
                         } else {
-                            playMusic(args != null && args.length > 0 ? args[0] : null);
+                            playMusic(pmModel);
                         }
                         notifyStatus(1); // STATE_START_PLAY
                         return null;
@@ -234,6 +244,19 @@ public final class QQMusicToolProxy {
                 return "title=" + title + ", artist=" + artist;
             } catch (Throwable t) {
                 return String.valueOf(model);
+            }
+        }
+
+        /** 读取 MusicModel 的 title（哨兵路由用） */
+        private static String modelTitle(Object musicModel) {
+            if (musicModel == null) {
+                return "";
+            }
+            try {
+                Object title = XposedHelpers.callMethod(musicModel, "getTitle");
+                return title == null ? "" : String.valueOf(title);
+            } catch (Throwable t) {
+                return "";
             }
         }
 

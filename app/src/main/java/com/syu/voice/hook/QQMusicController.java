@@ -53,15 +53,18 @@ public final class QQMusicController {
     private static final int ACTION_SEARCH_PLAY = 8;
     private static final int ACTION_CONTROL_PLAY = 20;
     /**
-     * v1.7.0 新增：歌单/电台播放（模块自定义 action，QQ音乐原生 receiver 不识别，
-     * 必须由 QQProcessHook 拦截后走 ApiMethodsImpl.playFolderType）：
-     *   m0=201 播放我喜欢/收藏的歌曲；m0=104 播放个人电台（智能推荐流）
+     * v1.7.0 新增：歌单播放（模块自定义 action，QQ音乐原生 receiver 不识别，
+     * 必须由 QQProcessHook 拦截后走 ApiMethodsImpl 内部 API）：
+     *   m0=201 收藏歌曲；m0=104 猜你喜欢（个人电台）；
+     *   m0=108 每日30首（取列表 mid → playSongMid）；m0=2 排行榜（取榜单→取歌曲→播放）
      */
     private static final int ACTION_FOLDER_PLAY = 30;
 
-    /** 歌单类型：201=我喜欢/收藏，104=个人电台（推荐流），与 ApiHolder 常量对应 */
+    /** 歌单类型，与 ApiHolder 常量对应：201=收藏，104=猜你喜欢，108=每日30首，2=排行榜 */
     public static final int FOLDER_FAVOURITE = 201;
     public static final int FOLDER_PERSONAL_RADIO = 104;
+    public static final int FOLDER_DAILY_30 = 108;
+    public static final int FOLDER_RANK = 2;
 
     private final Context mContext;
     private final String mPkg;
@@ -133,9 +136,15 @@ public final class QQMusicController {
      */
     public void playFolder(int folderType) {
         String url = mScheme + "://?action=" + ACTION_FOLDER_PLAY + "&m0=" + folderType;
-        String desc = "playFolder(" + folderType
-                + (folderType == FOLDER_FAVOURITE ? "=收藏" : folderType == FOLDER_PERSONAL_RADIO ? "=推荐电台" : "")
-                + ")";
+        String label;
+        switch (folderType) {
+            case FOLDER_FAVOURITE: label = "=收藏歌曲"; break;
+            case FOLDER_PERSONAL_RADIO: label = "=猜你喜欢"; break;
+            case FOLDER_DAILY_30: label = "=每日30首"; break;
+            case FOLDER_RANK: label = "=排行榜"; break;
+            default: label = ""; break;
+        }
+        String desc = "playFolder(" + folderType + label + ")";
         boolean started = ensureRunning();
         sendSchemeBroadcast(url, desc);
         if (started) {
