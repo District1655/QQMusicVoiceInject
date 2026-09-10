@@ -92,11 +92,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10803
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10804
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.3
+        └── java/com/syu/voice/hook/   # v1.8.4
             ├── MainHook.java         # Xposed 入口（进程分流）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存）

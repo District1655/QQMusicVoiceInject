@@ -21,6 +21,9 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -172,11 +175,11 @@ public class MainActivity extends Activity {
         });
         root.addView(rebootBtn);
 
-        Button forceStopBtn = makeButton("强制停止作用域应用（重载模块代码）");
+        Button forceStopBtn = makeButton("一键勾选作用域并重启应用");
         forceStopBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                confirmForceStopScope();
+                confirmAutoScopeAndRestart();
             }
         });
         root.addView(forceStopBtn);
@@ -862,6 +865,258 @@ public class MainActivity extends Activity {
             "com.netease.cloudmusic",        // 网易云 手机版
     };
 
+    private void confirmAutoScopeAndRestart() {
+        new AlertDialog.Builder(this)
+                .setTitle("一键勾选作用域并重启应用")
+                .setMessage("将自动把本模块的作用域勾选为：车助理、TXZ语音、QQ音乐HD/车机版/手机版、网易云车机版/手机版（仅勾选已安装的），并强制停止这些应用使其重新加载最新模块代码。\n\n"
+                        + "语音和音乐播放会短暂中断；车助理/TXZ等系统服务会被系统自动拉起。\n\n"
+                        + "需要 Root 权限。是否继续？")
+                .setPositiveButton("确定", (d, w) -> doAutoScopeAndRestart())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doAutoScopeAndRestart() {
+        mLogView.setText("正在配置 LSPosed 作用域并重启应用…\n");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                StringBuilder sb = new StringBuilder();
+                sb.append("===== 一键勾选作用域并重启 ")
+                        .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                                .format(new Date()))
+                        .append(" =====\n");
+                if (!hasRoot()) {
+                    sb.append("❌ 无 Root 权限\n");
+                    final String r = sb.toString();
+                    runOnUiThread(() -> mLogView.setText(r));
+                    return;
+                }
+
+                // 1. 配置 LSPosed 作用域
+                boolean scopeOk = ensureLsposedScope(sb);
+
+                // 2. 强制停止所有目标应用（无论 scope 配置是否成功都执行，
+                //    让已勾选的应用重新加载模块；未勾选的重启后也不注入）
+                sb.append("\n----- 强制停止目标应用 -----\n");
+                forceStopScopeAppsInternal(sb);
+
+                if (scopeOk) {
+                    sb.append("\n✅ 作用域已配置并重启应用。下次语音指令时各应用会加载最新模块代码。\n");
+                } else {
+                    sb.append("\n⚠️ 作用域配置未完全成功，已重启应用。请点「检测作用域」确认勾选状态。\n");
+                }
+
+                LogManager.i(TAG, "一键勾选作用域并重启结果:\n" + sb.toString());
+                final String result = sb.toString();
+                runOnUiThread(() -> {
+                    mLogView.setText(result);
+                    Toast.makeText(MainActivity.this, scopeOk ? "作用域已配置并重启应用"
+                            : "作用域配置部分失败，请查看日志", Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * 配置 LSPosed 作用域：把已安装的目标包全部加入模块 scope，enabled=1。
+     * 直接修改 LSPosed 配置数据库 modules_config.db 的 modules 表。
+     * @param sb 日志追加
+     * @return true=配置成功，false=失败
+     */
+    private boolean ensureLsposedScope(StringBuilder sb) {
+        String dbPath = null;
+        for (String p : LSPD_DB_PATHS) {
+            try {
+                byte[] out = suRun("ls -l " + p);
+                if (new String(out, "UTF-8").trim().length() > 0) {
+                    dbPath = p;
+                    break;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (dbPath == null) {
+            sb.append("❌ 未找到 LSPosed 配置数据库\n");
+            return false;
+        }
+        sb.append("数据库: ").append(dbPath).append("\n");
+
+        // 收集已安装的目标包
+        java.util.LinkedHashSet<String> targetPkgs = new java.util.LinkedHashSet<>();
+        for (String pkg : FORCE_STOP_PKGS) {
+            try {
+                getPackageManager().getPackageInfo(pkg, 0);
+                targetPkgs.add(pkg);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (targetPkgs.isEmpty()) {
+            sb.append("❌ 没有已安装的目标应用\n");
+            return false;
+        }
+
+        // 备份 + 拷贝到缓存目录
+        String cachedDb = new File(getCacheDir(), "lspd_modules_write.db").getAbsolutePath();
+        String backupDb = new File(getCacheDir(), "lspd_modules_backup.db").getAbsolutePath();
+        try {
+            suRun("cp " + dbPath + " " + backupDb);
+            suRun("cp " + dbPath + " " + cachedDb + " && chmod 644 " + cachedDb);
+        } catch (Throwable t) {
+            sb.append("❌ 拷贝数据库失败: ").append(t.getMessage()).append("\n");
+            return false;
+        }
+
+        boolean ok = false;
+        SQLiteDatabase db = null;
+        try {
+            db = SQLiteDatabase.openDatabase(cachedDb, null, SQLiteDatabase.OPEN_READWRITE);
+            // 读当前 scope
+            String currentScope = null;
+            try {
+                android.database.Cursor c = db.rawQuery(
+                        "SELECT scope FROM modules WHERE mid=?", new String[]{MODULE_PKG});
+                if (c.moveToFirst()) {
+                    currentScope = c.getString(0);
+                }
+                c.close();
+            } catch (Throwable t) {
+                sb.append("⚠️ 读 scope 失败: ").append(t.getMessage()).append("\n");
+            }
+
+            // 合并 scope：旧 scope ∪ 目标 scope
+            java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
+            if (currentScope != null && !currentScope.isEmpty()) {
+                try {
+                    JSONArray arr = new JSONArray(currentScope);
+                    for (int i = 0; i < arr.length(); i++) {
+                        merged.add(arr.getString(i));
+                    }
+                } catch (JSONException e) {
+                    sb.append("⚠️ 旧 scope JSON 解析失败，将覆盖: ").append(currentScope).append("\n");
+                }
+            }
+            java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
+            for (String pkg : targetPkgs) {
+                if (!merged.contains(pkg)) {
+                    merged.add(pkg);
+                    added.add(pkg);
+                }
+            }
+            JSONArray newScope = new JSONArray();
+            for (String pkg : merged) {
+                newScope.put(pkg);
+            }
+            String newScopeStr = newScope.toString();
+
+            // 写回：UPDATE 或 INSERT
+            try {
+                db.execSQL("UPDATE modules SET scope=?, enabled=1 WHERE mid=?",
+                        new Object[]{newScopeStr, MODULE_PKG});
+            } catch (Throwable t) {
+                // 可能没有该模块记录，尝试 INSERT
+                try {
+                    db.execSQL("INSERT INTO modules (mid, enabled, scope) VALUES (?, 1, ?)",
+                            new Object[]{MODULE_PKG, newScopeStr});
+                } catch (Throwable t2) {
+                    sb.append("❌ 写入 modules 表失败: ").append(t2.getMessage()).append("\n");
+                    return false;
+                }
+            }
+            // 清 WAL
+            try {
+                db.execSQL("PRAGMA wal_checkpoint(TRUNCATE)");
+            } catch (Throwable ignored) {
+            }
+            ok = true;
+            sb.append("✅ 作用域已配置（共 ").append(merged.size()).append(" 个包）\n");
+            if (!added.isEmpty()) {
+                sb.append("  新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
+            } else {
+                sb.append("  （目标包已全部在作用域中，无需新增）\n");
+            }
+        } catch (Throwable t) {
+            sb.append("❌ 操作数据库失败: ").append(t.getMessage()).append("\n");
+        } finally {
+            if (db != null) {
+                try { db.close(); } catch (Throwable ignored) {}
+            }
+        }
+        if (!ok) {
+            return false;
+        }
+
+        // 拷贝回原路径 + 恢复权限属主 + 清 WAL/SHM
+        try {
+            suRun("cp " + cachedDb + " " + dbPath
+                    + " && chmod 600 " + dbPath
+                    + " && chown system:system " + dbPath
+                    + " && rm -f " + dbPath + "-wal " + dbPath + "-shm");
+        } catch (Throwable t) {
+            sb.append("⚠️ 写回数据库后权限修正失败: ").append(t.getMessage()).append("\n");
+        }
+        new File(cachedDb).delete();
+        // 备份保留在缓存目录，用户可自行清理
+        return true;
+    }
+
+    /**
+     * 强制停止所有目标应用（v1.8.4 从原 doForceStopScope 抽出的内部方法，
+     * 供一键配置作用域后调用）。返回 ok/fail/skip 计数摘要。
+     */
+    private void forceStopScopeAppsInternal(StringBuilder sb) {
+        int ok = 0, fail = 0, skip = 0;
+        for (String pkg : FORCE_STOP_PKGS) {
+            boolean installed;
+            try {
+                getPackageManager().getPackageInfo(pkg, 0);
+                installed = true;
+            } catch (Throwable t) {
+                installed = false;
+            }
+            if (!installed) {
+                sb.append(pkg).append(": 未安装，跳过\n");
+                skip++;
+                continue;
+            }
+            String pidBefore = getPidOf(pkg);
+            String forceErr = null;
+            try {
+                suRun("am force-stop " + pkg);
+            } catch (Throwable t) {
+                forceErr = t.getMessage();
+            }
+            try { Thread.sleep(600); } catch (Throwable ignored) {}
+            String pidAfter = getPidOf(pkg);
+            boolean stopped = pidAfter.isEmpty();
+            sb.append(pkg).append(": ");
+            if (pidBefore.isEmpty()) {
+                sb.append("停止前=未运行");
+            } else {
+                sb.append("停止前 pid=").append(pidBefore);
+            }
+            sb.append(" → ");
+            if (stopped) {
+                sb.append("已停止 ✅");
+                ok++;
+            } else {
+                sb.append("仍在运行 pid=").append(pidAfter).append(" ⚠️");
+                if (!pidBefore.equals(pidAfter)) {
+                    ok++;
+                } else {
+                    fail++;
+                }
+            }
+            if (forceErr != null) {
+                sb.append(" | force-stop 异常: ").append(forceErr);
+                fail++;
+            }
+            sb.append("\n");
+        }
+        sb.append("小结：成功 ").append(ok).append("，失败 ").append(fail)
+                .append("，跳过未安装 ").append(skip).append("\n");
+    }
+
     private void confirmForceStopScope() {
         new AlertDialog.Builder(this)
                 .setTitle("强制停止作用域应用")
@@ -875,8 +1130,9 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** @deprecated 保留兼容（已被 doAutoScopeAndRestart 取代） */
     private void doForceStopScope() {
-        mLogView.setText("正在强制停止作用域应用…（需要 Root，首次可能弹出 Magisk 授权）\n");
+        mLogView.setText("正在强制停止作用域应用…\n");
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -886,93 +1142,18 @@ public class MainActivity extends Activity {
                                 .format(new Date()))
                         .append(" =====\n");
                 if (!hasRoot()) {
-                    sb.append("❌ 无 Root 权限，无法执行 am force-stop\n")
-                            .append("（请在 Magisk 中允许 fytMusicVoiceInject 获取 root）\n");
+                    sb.append("❌ 无 Root 权限\n");
                     final String r = sb.toString();
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            mLogView.setText(r);
-                        }
-                    });
+                    runOnUiThread(() -> mLogView.setText(r));
                     return;
                 }
-                int ok = 0, fail = 0, skip = 0;
-                for (String pkg : FORCE_STOP_PKGS) {
-                    // 1. 是否已安装
-                    boolean installed;
-                    try {
-                        getPackageManager().getPackageInfo(pkg, 0);
-                        installed = true;
-                    } catch (Throwable t) {
-                        installed = false;
-                    }
-                    if (!installed) {
-                        sb.append(pkg).append(": 未安装，跳过\n");
-                        skip++;
-                        continue;
-                    }
-                    // 2. 停止前 pid
-                    String pidBefore = getPidOf(pkg);
-                    // 3. am force-stop
-                    String forceErr = null;
-                    try {
-                        suRun("am force-stop " + pkg);
-                    } catch (Throwable t) {
-                        forceErr = t.getMessage();
-                    }
-                    // 4. 等待 600ms 让进程退出（系统服务可能被立即拉起，属正常）
-                    try {
-                        Thread.sleep(600);
-                    } catch (Throwable ignored) {
-                    }
-                    // 5. 停止后 pid
-                    String pidAfter = getPidOf(pkg);
-                    boolean stopped = pidAfter.isEmpty();
-                    sb.append(pkg).append(": ");
-                    if (pidBefore.isEmpty()) {
-                        sb.append("停止前=未运行");
-                    } else {
-                        sb.append("停止前 pid=").append(pidBefore);
-                    }
-                    sb.append(" → ");
-                    if (stopped) {
-                        sb.append("已停止 ✅");
-                        ok++;
-                    } else {
-                        sb.append("仍在运行 pid=").append(pidAfter).append(" ⚠️")
-                                .append("（系统服务可能被自动拉起，属正常；新进程已加载新模块）");
-                        // 进程被自动重启也算"生效"——新 pid 即是新进程
-                        if (!pidBefore.equals(pidAfter)) {
-                            ok++;
-                        } else {
-                            fail++;
-                        }
-                    }
-                    if (forceErr != null) {
-                        sb.append(" | force-stop 异常: ").append(forceErr);
-                        fail++;
-                    }
-                    sb.append("\n");
-                }
-                sb.append("===== 完成（成功 ").append(ok)
-                        .append("，失败 ").append(fail)
-                        .append("，跳过未安装 ").append(skip).append("）=====\n")
-                        .append("说明：系统服务（车助理/TXZ）停止后会被系统立即拉起，")
-                        .append("新进程已加载最新模块代码；QQ音乐等普通应用需下次语音指令时由模块拉起。\n");
-
-                // 写入模块 App 自己的文件日志 + logcat
+                forceStopScopeAppsInternal(sb);
                 LogManager.i(TAG, "强制停止作用域应用结果:\n" + sb.toString());
-
                 final String result = sb.toString();
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        mLogView.setText(result);
-                        Toast.makeText(MainActivity.this,
-                                "已强制停止作用域应用，详情见日志区域",
-                                Toast.LENGTH_LONG).show();
-                    }
+                runOnUiThread(() -> {
+                    mLogView.setText(result);
+                    Toast.makeText(MainActivity.this, "已强制停止作用域应用",
+                            Toast.LENGTH_LONG).show();
                 });
             }
         }).start();
