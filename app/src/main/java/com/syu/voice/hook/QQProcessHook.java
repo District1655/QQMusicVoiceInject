@@ -85,7 +85,15 @@ public final class QQProcessHook {
     }
 
     public static void hook(final String pkg, final ClassLoader cl) {
-        ApiHolder.init(cl);
+        // v1.8.6：入口立即落 LSPosed modules.log，确认 QQ 进程进入 hook() 注册阶段
+        MainHook.xlog("QQProcessHook.hook() 进入 pkg=" + pkg
+                + " cl=" + (cl == null ? "null" : cl.getClass().getName()));
+        try {
+            ApiHolder.init(cl);
+            MainHook.xlog("[" + pkg + "] ApiHolder.init 完成");
+        } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] ApiHolder.init 异常: " + t);
+        }
 
         // 1) hook ApiMethodsImpl 私有构造：任何路径创建都捕获实例
         try {
@@ -97,7 +105,9 @@ public final class QQProcessHook {
                 }
             });
             LogManager.d(TAG, "[" + pkg + "] hook ApiMethodsImpl 构造成功");
+            MainHook.xlog("[" + pkg + "] hook ApiMethodsImpl 构造成功");
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook ApiMethodsImpl 构造跳过: " + t);
             LogManager.d(TAG, "[" + pkg + "] hook ApiMethodsImpl 构造跳过: " + t.getMessage());
         }
 
@@ -150,7 +160,9 @@ public final class QQProcessHook {
                         }
                     });
             LogManager.i(TAG, "[" + pkg + "] 已 hook 第三方控制广播（点歌/播放控制将走内部 API 后台播放）");
+            MainHook.xlog("[" + pkg + "] hook 第三方控制广播成功");
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook BroadcastReceiverCenterForThird 失败: " + t);
             LogManager.e(TAG, "[" + pkg + "] hook BroadcastReceiverCenterForThird 失败", t);
         }
 
@@ -165,6 +177,9 @@ public final class QQProcessHook {
                             final Context app = (Context) param.thisObject;
                             ContextHolder.set(app);
                             LogManager.init(app);
+                            MainHook.xlog("[" + pkg + "] QQ Application.onCreate 已触发 ctx="
+                                    + app.getPackageName() + " logFile="
+                                    + LogManager.getLogFile());
                             try {
                                 Context moduleCtx = app.createPackageContext(
                                         "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
@@ -183,6 +198,7 @@ public final class QQProcessHook {
                         }
                     });
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook Application.onCreate 失败: " + t);
             LogManager.e(TAG, "[" + pkg + "] hook Application.onCreate 失败（文件日志不可用）", t);
         }
 
@@ -209,6 +225,7 @@ public final class QQProcessHook {
             });
             LogManager.i(TAG, "[" + pkg + "] 已 hook ActiveAppManager.b()（null 兜底防崩溃）");
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook ActiveAppManager.b() 失败: " + t);
             LogManager.e(TAG, "[" + pkg + "] hook ActiveAppManager.b() 失败", t);
         }
         try {
@@ -226,8 +243,10 @@ public final class QQProcessHook {
             });
             LogManager.i(TAG, "[" + pkg + "] 已 hook TvPreferences.d0()（强制关闭边听边存）");
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook TvPreferences.d0() 失败: " + t);
             LogManager.e(TAG, "[" + pkg + "] hook TvPreferences.d0() 失败", t);
         }
+        MainHook.xlog("QQProcessHook.hook() 注册阶段全部完成 pkg=" + pkg);
     }
 
     /**

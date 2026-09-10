@@ -4,6 +4,7 @@ import android.content.Context;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -23,23 +24,41 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         String pkg = lpparam.packageName;
-
-        // TXZ 语音主服务（com.txznet.txz）：v1.3.2 起 hook 音乐模块 y()，
-        // 确保"上一曲/下一曲/暂停"等控制命令走 MusicTool 代理而不是系统媒体键
-        if ("com.txznet.txz".equals(pkg)) {
-            TXZHook.hook(lpparam.classLoader);
-            return;
+        // v1.8.6：XposedBridge.log 直接写入 LSPosed modules.log（导出日志时可在 lsposed/ 目录拿到），
+        // 不依赖 logcat 环形缓冲（chatty 会丢弃）和文件日志（Application.onCreate 之后才可用）。
+        // 用于定位"模块类已加载但 hook 分支未执行/静默失败"的问题。
+        try {
+            XposedBridge.log("[fyt] handleLoadPackage 进入: pkg=" + pkg
+                    + " process=" + lpparam.processName
+                    + " cl=" + (lpparam.classLoader == null ? "null"
+                    : lpparam.classLoader.getClass().getName())
+                    + " v" + BuildConfig.VERSION_NAME);
+        } catch (Throwable ignored) {
         }
 
-        // QQ音乐进程：v1.3.0 后台搜索直接播放（需要用户在 LSPosed 作用域勾选 QQ音乐）
-        if (QQProcessHook.isQQMusicPkg(pkg)) {
-            QQProcessHook.hook(pkg, lpparam.classLoader);
-            return;
-        }
+        try {
+            // TXZ 语音主服务（com.txznet.txz）：v1.3.2 起 hook 音乐模块 y()，
+            // 确保"上一曲/下一曲/暂停"等控制命令走 MusicTool 代理而不是系统媒体键
+            if ("com.txznet.txz".equals(pkg)) {
+                xlog("分发 -> TXZHook.hook (com.txznet.txz)");
+                TXZHook.hook(lpparam.classLoader);
+                xlog("TXZHook.hook 返回（注册阶段完成）");
+                return;
+            }
 
-        if (!"com.syu.voice".equals(pkg)) {
-            return;
-        }
+            // QQ音乐进程：v1.3.0 后台搜索直接播放（需要用户在 LSPosed 作用域勾选 QQ音乐）
+            if (QQProcessHook.isQQMusicPkg(pkg)) {
+                xlog("分发 -> QQProcessHook.hook (" + pkg + ")");
+                QQProcessHook.hook(pkg, lpparam.classLoader);
+                xlog("QQProcessHook.hook 返回（注册阶段完成）");
+                return;
+            }
+
+            if (!"com.syu.voice".equals(pkg)) {
+                xlog("非作用域包，跳过: " + pkg);
+                return;
+            }
+            xlog("分发 -> com.syu.voice（车助理）hook 流程");
 
         // hook Application.onCreate：在 Application 初始化完成后拿到稳定的 Context，
         // 初始化文件日志 + 设置全局 Context（供 MediaSession 控制使用）。
@@ -52,6 +71,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         Context app = (Context) param.thisObject;
                         ContextHolder.set(app);
                         LogManager.init(app);
+                        xlog("车助理 Application.onCreate 已触发，ctx=" + app.getPackageName()
+                                + " logFile=" + LogManager.getLogFile());
                         // 从模块 App 的 SharedPreferences 读取日志开关（默认开启）
                         try {
                             Context moduleCtx = app.createPackageContext(
@@ -72,5 +93,20 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // 立即 hook 音乐工具白名单（不需要等 Application.onCreate）
         MusicToolInject.hook(lpparam.classLoader);
+        xlog("车助理 hook 注册阶段完成（MusicToolInject.hook 已返回）");
+        } catch (Throwable t) {
+            // handleLoadPackage 内部任何未预期异常都必须落到 LSPosed 日志，避免静默失败
+            XposedBridge.log("[fyt] !! handleLoadPackage 处理 " + pkg + " 时抛出异常");
+            XposedBridge.log(t);
+            throw t;
+        }
+    }
+
+    /** XposedBridge.log 包装（统一前缀），写入 LSPosed modules.log，随日志包导出。 */
+    static void xlog(String msg) {
+        try {
+            XposedBridge.log("[fyt] " + msg);
+        } catch (Throwable ignored) {
+        }
     }
 }

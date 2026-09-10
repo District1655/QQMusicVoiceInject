@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.8.5）
+## 支持列表（v1.8.6）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -70,13 +70,14 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 - **QQ音乐进程稳定性与副作用治理**（v1.8.1）：
   - 修复播放统计协程 NPE 崩溃（ActiveAppManager 活跃第三方包名为 null）——模块进程内反射调用不走 Binder 授权，该字段恒为 null，播放一段时间后 QQ音乐崩溃重启，歌单播放随之失败
   - 自动关闭 QQ音乐"边听边存"（TvPreferences savewhenplay 云控默认开启），不再播放一首就下载一首到本地
-- **安装生效与作用域管理**（v1.8.4 起）：
-  - 模块 App「一键勾选作用域并重启应用」：自动把已安装目标包写入 LSPosed 作用域并 enabled=1，然后 force-stop 使其重载模块（替代手动去 LSPosed 管理器勾选+重启）
-  - 模块 App「检测 LSPosed 作用域勾选状态」：root 读取 LSPosed 数据库，列出各 App 勾选状态
+- **安装生效与作用域管理**（v1.8.4 起，v1.8.6 修复）：
+  - 模块 App「一键勾选作用域并重启应用」：自动把已安装目标包写入 LSPosed 作用域并 enabled=1，然后 force-stop 使其重载模块（替代手动去 LSPosed 管理器勾选+重启）；v1.8.6 起按 LSPosed 1.9.x 真实 schema（modules + scope 两张表）自省读写，修复旧版 chmod 644 导致只读打不开数据库、SQL 表结构假设错误两个问题
+  - 模块 App「检测 LSPosed 作用域勾选状态」：root 读取 LSPosed 数据库，列出各 App 勾选状态（v1.8.6 同步适配真实 schema）
   - 模块 App「强制停止作用域应用」：仅重启不修改作用域
   - LSPosed 作用域需勾选：车助理(com.syu.voice)、TXZ语音(com.txznet.txz)、QQ音乐HD(com.tencent.qqmusicpad)
 - **日志诊断**（v1.8.5 起）：
   - 导出日志时一并导出 LSPosed 框架注入日志（`lsposed/` 目录 + `logcat_lsposed.txt`），可直接确认模块是否注入目标进程
+  - v1.8.6 起模块在每个注入进程的入口/分发/hook 注册处写 `XposedBridge.log`（前缀 `[fyt]`），直接落 LSPosed modules.log——不受 logcat chatty 丢行、文件日志延迟初始化影响，导出后搜 `[fyt]` 即可还原各进程 hook 注册轨迹
   - 「查看运行日志」标注各进程模块加载版本
 - **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 适配 PlayerService 绑定状态）
 - **自动拉起**：QQ音乐未运行时先启动再操作（v1.3.1）
@@ -99,22 +100,22 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10805
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10806
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.5
-            ├── MainHook.java         # Xposed 入口（进程分流）
-            ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化）
-            ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存）
+        └── java/com/syu/voice/hook/   # v1.8.6
+            ├── MainHook.java         # Xposed 入口（进程分流；v1.8.6 XposedBridge.log 全链路埋点）
+            ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化；v1.8.6 LSPosed 日志埋点）
+            ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存；v1.8.6 LSPosed 日志埋点）
             ├── ApiHolder.java        # ApiMethodsImpl 实例持有 + voicePlay/控制/playFolderType/getSongList/playSongMid；v1.8.1 收藏 101 自动重试
             ├── MusicToolInject.java  # 白名单注入（5 个目标包名）
-            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充）
+            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充；v1.8.6 "xxx喜欢"结尾兜底）
             ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；action=30 歌单 m0=201/104/108/2；v1.8.3 原生 action 兜底）
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录）
             ├── ContextHolder.java    # Application Context 持有
             ├── UpdateManager.java    # GitHub Releases 检查/下载/安装
-            └── MainActivity.java     # 模块 UI（日志/更新/重启/日志开关；v1.8.1 加载状态诊断；v1.8.2 强制停止按钮；v1.8.3 作用域检测；v1.8.4 一键勾选作用域；v1.8.5 LSPosed 日志导出）
+            └── MainActivity.java     # 模块 UI（日志/更新/重启/日志开关；v1.8.1 加载状态诊断；v1.8.2 强制停止按钮；v1.8.3 作用域检测；v1.8.4 一键勾选作用域；v1.8.5 LSPosed 日志导出；v1.8.6 作用域 DB schema 自省修复）
 ```
 
 ## 构建
@@ -165,7 +166,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.5 | 导出日志时一并导出 LSPosed 框架注入日志：root 打包 `/data/adb/lspd/log/` 等路径日志到 `lsposed/` 目录；logcat 按 LSPosed/LSPosed-Bridge/LSPosedManager/Xposed 标签过滤生成 `logcat_lsposed.txt`；info.txt 列出 LSPosed 日志文件清单（当前版本） |
+| v1.8.6 | ①模块入口/分发/hook 注册全链路改走 XposedBridge.log（`[fyt]` 前缀，直接落 LSPosed modules.log，导出可查），解决"模块类已加载但 hook 是否执行无法证实"的盲区；②重写作用域读写：sqlite_master 自省适配 LSPosed 1.9.x 真实 schema（modules+scope 两表），修复一键勾选 chmod 644 只读打不开数据库、检测 SQL 表结构假设错误两个 bug；写回 cp 覆盖保留属主/SELinux 上下文；③收藏关键词兜底扩充：title 以"喜欢"结尾（如 ASR 误识"china喜欢"）→ 收藏歌单（当前版本） |
+| v1.8.5 | 导出日志时一并导出 LSPosed 框架注入日志：root 打包 `/data/adb/lspd/log/` 等路径日志到 `lsposed/` 目录；logcat 按 LSPosed/LSPosed-Bridge/LSPosedManager/Xposed 标签过滤生成 `logcat_lsposed.txt`；info.txt 列出 LSPosed 日志文件清单 |
 | v1.8.4 | 「强制停止作用域应用」按钮升级为「一键勾选作用域并重启应用」：自动定位 LSPosed 配置数据库，把已安装目标包合并写入模块 scope 并 enabled=1，备份+清 WAL+恢复权限属主，然后 force-stop 所有目标应用重载模块；全过程记录日志 |
 | v1.8.3 | 定位 v1.8.2 收藏失败根因：LSPosed 作用域未勾选 QQ音乐HD/TXZ → action=30 广播被原生丢弃。修复：①playFolder 增加 QQ 原生 action 兜底（收藏→action=4，排行榜→action=7）；②车助理侧关键词兜底扩充"你喜欢""三零"等 ASR 错字；③模块 App 新增"检测 LSPosed 作用域勾选状态"按钮；④parseLoadedVersion 取最新加载版本 |
 | v1.8.2 | 模块 App 新增"强制停止作用域应用"按钮：一键 `am force-stop` 所有作用域宿主进程使其重载模块代码；记录每个 App 停止前后 pid；修复模块 App 进程此前从未初始化文件日志的问题 |

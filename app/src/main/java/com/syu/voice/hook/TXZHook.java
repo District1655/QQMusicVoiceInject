@@ -65,6 +65,8 @@ public final class TXZHook {
     }
 
     public static void hook(ClassLoader cl) {
+        // v1.8.6：入口立即打 LSPosed 日志，确认 TXZ 进程确实进入 hook() 注册阶段
+        MainHook.xlog("TXZHook.hook() 进入 cl=" + (cl == null ? "null" : cl.getClass().getName()));
         // v1.8.1：TXZ 进程此前从未初始化文件日志（handleLoadPackage 时无 Context），
         // 导致导出的日志包里 TXZ 永远"未找到"，无法判断模块是否注入。
         // hook Application.onCreate 拿到 Context 后初始化日志并打印加载版本。
@@ -76,6 +78,9 @@ public final class TXZHook {
                             Context app = (Context) param.thisObject;
                             ContextHolder.set(app);
                             LogManager.init(app);
+                            MainHook.xlog("TXZ Application.onCreate 已触发 ctx="
+                                    + app.getPackageName() + " logFile="
+                                    + LogManager.getLogFile());
                             try {
                                 Context moduleCtx = app.createPackageContext(
                                         "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
@@ -91,7 +96,9 @@ public final class TXZHook {
                                     + LogManager.getLogFile());
                         }
                     });
+            MainHook.xlog("TXZ Application.onCreate hook 注册成功");
         } catch (Throwable t) {
+            MainHook.xlog("TXZ hook Application.onCreate 失败: " + t);
             LogManager.e(TAG, "TXZ hook Application.onCreate 失败（文件日志不可用）", t);
         }
 
@@ -106,10 +113,12 @@ public final class TXZHook {
                     });
             LogManager.i(TAG, "TXZ hook: 音乐模块 y() → false（控制命令强制走 MusicTool）");
         } catch (Throwable t) {
+            MainHook.xlog("TXZ hook music.b.y() 失败: " + t);
             LogManager.e(TAG, "TXZ hook music.b.y() 失败: " + t.getMessage(), t);
         }
 
         hookPlaylistNlu(cl);
+        MainHook.xlog("TXZHook.hook() 注册阶段全部完成");
     }
 
     /**

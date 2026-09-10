@@ -994,27 +994,22 @@ public class MainActivity extends Activity {
 
     /**
      * 配置 LSPosed 作用域：把已安装的目标包全部加入模块 scope，enabled=1。
-     * 直接修改 LSPosed 配置数据库 modules_config.db 的 modules 表。
+     * v1.8.6：重写。旧版假设 modules 表有 mid(文本)/scope(JSON)/enabled 三列，
+     * 但 LSPosed 1.9.x 实际 schema 是
+     *   modules(mid INTEGER PK AUTOINCREMENT, module_pkg_name TEXT, apk_path TEXT, enabled INTEGER)
+     *   scope(mid INTEGER, app_pkg_name TEXT, user_id INTEGER)
+     * 且 su cp 出来的文件属主是 root、chmod 644 对应用 uid 只读 → OPEN_READWRITE 失败。
+     * 现在改为：打开后先自省表结构，按真实 schema 读写；缓存文件 chmod 666；
+     * 写回时 cp 覆盖原文件（inode/属主/SELinux 上下文均保留）。
+     *
      * @param sb 日志追加
      * @return true=配置成功，false=失败
      */
     private boolean ensureLsposedScope(StringBuilder sb) {
-        String dbPath = null;
-        for (String p : LSPD_DB_PATHS) {
-            try {
-                byte[] out = suRun("ls -l " + p);
-                if (new String(out, "UTF-8").trim().length() > 0) {
-                    dbPath = p;
-                    break;
-                }
-            } catch (Throwable ignored) {
-            }
-        }
+        String dbPath = locateLsposedDb(sb);
         if (dbPath == null) {
-            sb.append("❌ 未找到 LSPosed 配置数据库\n");
             return false;
         }
-        sb.append("数据库: ").append(dbPath).append("\n");
 
         // 收集已安装的目标包
         java.util.LinkedHashSet<String> targetPkgs = new java.util.LinkedHashSet<>();
@@ -1030,12 +1025,16 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 备份 + 拷贝到缓存目录
+        // 备份 + 拷贝（含 -wal/-shm）到缓存目录，chmod 666 让本应用可读写
         String cachedDb = new File(getCacheDir(), "lspd_modules_write.db").getAbsolutePath();
         String backupDb = new File(getCacheDir(), "lspd_modules_backup.db").getAbsolutePath();
         try {
-            suRun("cp " + dbPath + " " + backupDb);
-            suRun("cp " + dbPath + " " + cachedDb + " && chmod 644 " + cachedDb);
+            suRun("cp " + dbPath + " " + backupDb + "; true");
+            suRun("cp " + dbPath + " " + cachedDb + "; "
+                    + "cp " + dbPath + "-wal " + cachedDb + "-wal 2>/dev/null; "
+                    + "cp " + dbPath + "-shm " + cachedDb + "-shm 2>/dev/null; "
+                    + "chmod 666 " + cachedDb + " " + cachedDb + "-wal "
+                    + cachedDb + "-shm 2>/dev/null; true");
         } catch (Throwable t) {
             sb.append("❌ 拷贝数据库失败: ").append(t.getMessage()).append("\n");
             return false;
@@ -1045,69 +1044,152 @@ public class MainActivity extends Activity {
         SQLiteDatabase db = null;
         try {
             db = SQLiteDatabase.openDatabase(cachedDb, null, SQLiteDatabase.OPEN_READWRITE);
-            // 读当前 scope
-            String currentScope = null;
-            try {
+
+            java.util.LinkedHashSet<String> tableSet = new java.util.LinkedHashSet<>();
+            android.database.Cursor tc = db.rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table'", null);
+            while (tc.moveToNext()) {
+                tableSet.add(tc.getString(0));
+            }
+            tc.close();
+            java.util.Set<String> modulesCols = tableColumns(db, "modules");
+            java.util.Set<String> scopeCols = tableColumns(db, "scope");
+
+            if (tableSet.contains("modules") && modulesCols.contains("module_pkg_name")) {
+                // ===== 标准 LSPosed schema：modules + scope 两张表 =====
+                sb.append("schema: modules+scope 标准结构（module_pkg_name）\n");
+                // 1) 找/建模块行
+                int mid = -1;
+                int enabled = -1;
+                android.database.Cursor c = db.rawQuery(
+                        "SELECT mid, enabled FROM modules WHERE module_pkg_name=?",
+                        new String[]{MODULE_PKG});
+                if (c.moveToFirst()) {
+                    mid = c.getInt(0);
+                    enabled = c.getInt(1);
+                }
+                c.close();
+                if (mid < 0) {
+                    String apkPath;
+                    try {
+                        apkPath = getPackageManager()
+                                .getApplicationInfo(MODULE_PKG, 0).sourceDir;
+                    } catch (Throwable t) {
+                        apkPath = "";
+                    }
+                    if (modulesCols.contains("apk_path")) {
+                        db.execSQL("INSERT INTO modules (module_pkg_name, apk_path, enabled)"
+                                + " VALUES (?, ?, 1)", new Object[]{MODULE_PKG, apkPath});
+                    } else {
+                        db.execSQL("INSERT INTO modules (module_pkg_name, enabled)"
+                                + " VALUES (?, 1)", new Object[]{MODULE_PKG});
+                    }
+                    sb.append("  modules 表无本模块记录，已新建（mid 自动分配）\n");
+                    c = db.rawQuery("SELECT mid FROM modules WHERE module_pkg_name=?",
+                            new String[]{MODULE_PKG});
+                    if (c.moveToFirst()) {
+                        mid = c.getInt(0);
+                    }
+                    c.close();
+                } else if (enabled != 1) {
+                    db.execSQL("UPDATE modules SET enabled=1 WHERE mid=?",
+                            new Object[]{mid});
+                    sb.append("  模块原 enabled=").append(enabled).append("，已置 1\n");
+                }
+                if (mid < 0) {
+                    sb.append("❌ 无法获取/创建模块 mid，终止\n");
+                    return false;
+                }
+                // 2) 合并 scope 行
+                java.util.LinkedHashSet<String> existing = new java.util.LinkedHashSet<>();
+                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
+                        new String[]{String.valueOf(mid)});
+                while (c.moveToNext()) {
+                    existing.add(c.getString(0));
+                }
+                c.close();
+                java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
+                boolean hasUser = scopeCols.contains("user_id");
+                for (String pkg : targetPkgs) {
+                    if (!existing.contains(pkg)) {
+                        if (hasUser) {
+                            db.execSQL("INSERT OR IGNORE INTO scope (mid, app_pkg_name, user_id)"
+                                    + " VALUES (?, ?, 0)", new Object[]{mid, pkg});
+                        } else {
+                            db.execSQL("INSERT OR IGNORE INTO scope (mid, app_pkg_name)"
+                                    + " VALUES (?, ?)", new Object[]{mid, pkg});
+                        }
+                        added.add(pkg);
+                    }
+                }
+                // 3) 回读确认
+                java.util.LinkedHashSet<String> finalScope = new java.util.LinkedHashSet<>();
+                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
+                        new String[]{String.valueOf(mid)});
+                while (c.moveToNext()) {
+                    finalScope.add(c.getString(0));
+                }
+                c.close();
+                ok = true;
+                sb.append("✅ 作用域已配置，当前共 ").append(finalScope.size()).append(" 个包：\n");
+                sb.append("  ").append(TextUtils.join(", ", finalScope)).append("\n");
+                if (!added.isEmpty()) {
+                    sb.append("  本次新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
+                }
+            } else if (tableSet.contains("modules") && modulesCols.contains("scope")) {
+                // ===== 旧 JSON schema 兜底（modules.mid 文本 + scope JSON 列）=====
+                sb.append("schema: modules.scope JSON 结构\n");
+                String currentScope = null;
                 android.database.Cursor c = db.rawQuery(
                         "SELECT scope FROM modules WHERE mid=?", new String[]{MODULE_PKG});
                 if (c.moveToFirst()) {
                     currentScope = c.getString(0);
                 }
                 c.close();
-            } catch (Throwable t) {
-                sb.append("⚠️ 读 scope 失败: ").append(t.getMessage()).append("\n");
-            }
-
-            // 合并 scope：旧 scope ∪ 目标 scope
-            java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
-            if (currentScope != null && !currentScope.isEmpty()) {
-                try {
-                    JSONArray arr = new JSONArray(currentScope);
-                    for (int i = 0; i < arr.length(); i++) {
-                        merged.add(arr.getString(i));
+                java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
+                if (currentScope != null && !currentScope.isEmpty()) {
+                    try {
+                        JSONArray arr = new JSONArray(currentScope);
+                        for (int i = 0; i < arr.length(); i++) {
+                            merged.add(arr.getString(i));
+                        }
+                    } catch (JSONException e) {
+                        sb.append("⚠️ 旧 scope JSON 解析失败，将覆盖: ").append(currentScope).append("\n");
                     }
-                } catch (JSONException e) {
-                    sb.append("⚠️ 旧 scope JSON 解析失败，将覆盖: ").append(currentScope).append("\n");
                 }
-            }
-            java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
-            for (String pkg : targetPkgs) {
-                if (!merged.contains(pkg)) {
-                    merged.add(pkg);
-                    added.add(pkg);
+                java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
+                for (String pkg : targetPkgs) {
+                    if (!merged.contains(pkg)) {
+                        merged.add(pkg);
+                        added.add(pkg);
+                    }
                 }
-            }
-            JSONArray newScope = new JSONArray();
-            for (String pkg : merged) {
-                newScope.put(pkg);
-            }
-            String newScopeStr = newScope.toString();
-
-            // 写回：UPDATE 或 INSERT
-            try {
-                db.execSQL("UPDATE modules SET scope=?, enabled=1 WHERE mid=?",
-                        new Object[]{newScopeStr, MODULE_PKG});
-            } catch (Throwable t) {
-                // 可能没有该模块记录，尝试 INSERT
-                try {
+                JSONArray newScope = new JSONArray();
+                for (String pkg : merged) {
+                    newScope.put(pkg);
+                }
+                String newScopeStr = newScope.toString();
+                int rows = db.update("modules", createScopeValues(newScopeStr),
+                        "mid=?", new String[]{MODULE_PKG});
+                if (rows == 0) {
                     db.execSQL("INSERT INTO modules (mid, enabled, scope) VALUES (?, 1, ?)",
                             new Object[]{MODULE_PKG, newScopeStr});
-                } catch (Throwable t2) {
-                    sb.append("❌ 写入 modules 表失败: ").append(t2.getMessage()).append("\n");
-                    return false;
                 }
+                ok = true;
+                sb.append("✅ 作用域已配置（共 ").append(merged.size()).append(" 个包）\n");
+                if (!added.isEmpty()) {
+                    sb.append("  新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
+                }
+            } else {
+                sb.append("❌ 无法识别的数据库 schema，表: ").append(tableSet).append("\n");
+                sb.append("  modules 列: ").append(modulesCols).append("\n");
+                sb.append("  scope 列: ").append(scopeCols).append("\n");
+                sb.append("请把本段日志反馈，按实际 schema 适配。\n");
+                return false;
             }
-            // 清 WAL
             try {
                 db.execSQL("PRAGMA wal_checkpoint(TRUNCATE)");
             } catch (Throwable ignored) {
-            }
-            ok = true;
-            sb.append("✅ 作用域已配置（共 ").append(merged.size()).append(" 个包）\n");
-            if (!added.isEmpty()) {
-                sb.append("  新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
-            } else {
-                sb.append("  （目标包已全部在作用域中，无需新增）\n");
             }
         } catch (Throwable t) {
             sb.append("❌ 操作数据库失败: ").append(t.getMessage()).append("\n");
@@ -1120,18 +1202,62 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 拷贝回原路径 + 恢复权限属主 + 清 WAL/SHM
+        // 写回原路径：cp 覆盖已存在文件，inode/属主/权限/SELinux 上下文保持原样；
+        // 清掉残留 -wal/-shm；restorecon 兜底修正上下文（失败可忽略）。
         try {
-            suRun("cp " + cachedDb + " " + dbPath
-                    + " && chmod 600 " + dbPath
-                    + " && chown system:system " + dbPath
-                    + " && rm -f " + dbPath + "-wal " + dbPath + "-shm");
+            suRun("cp " + cachedDb + " " + dbPath + "; "
+                    + "rm -f " + dbPath + "-wal " + dbPath + "-shm; "
+                    + "restorecon -F " + dbPath + " 2>/dev/null; true");
         } catch (Throwable t) {
-            sb.append("⚠️ 写回数据库后权限修正失败: ").append(t.getMessage()).append("\n");
+            sb.append("⚠️ 写回数据库失败: ").append(t.getMessage()).append("\n");
+            return false;
         }
         new File(cachedDb).delete();
-        // 备份保留在缓存目录，用户可自行清理
+        new File(cachedDb + "-wal").delete();
+        new File(cachedDb + "-shm").delete();
+        sb.append("  已写回 ").append(dbPath).append("\n");
+        sb.append("  提示：LSPosed 守护进程可能缓存作用域，若重启应用后仍未注入，请重启车机。\n");
         return true;
+    }
+
+    /** ContentValues 小工具（modules.scope JSON 兜底分支用） */
+    private static android.content.ContentValues createScopeValues(String scopeJson) {
+        android.content.ContentValues v = new android.content.ContentValues();
+        v.put("scope", scopeJson);
+        v.put("enabled", 1);
+        return v;
+    }
+
+    /** 定位 LSPosed 配置数据库，找不到返回 null（并写日志） */
+    private String locateLsposedDb(StringBuilder sb) {
+        for (String p : LSPD_DB_PATHS) {
+            try {
+                byte[] out = suRun("ls -l " + p + " 2>/dev/null");
+                if (new String(out, "UTF-8").trim().length() > 0) {
+                    sb.append("数据库: ").append(p).append("\n");
+                    return p;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        sb.append("❌ 未找到 LSPosed 配置数据库（已尝试 ").append(LSPD_DB_PATHS.length)
+                .append(" 个常见路径）\n");
+        return null;
+    }
+
+    /** 自省表列名（PRAGMA table_info） */
+    private static java.util.Set<String> tableColumns(SQLiteDatabase db, String table) {
+        java.util.LinkedHashSet<String> cols = new java.util.LinkedHashSet<>();
+        try {
+            android.database.Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+            int nameIdx = c.getColumnIndex("name");
+            while (c.moveToNext()) {
+                cols.add(c.getString(nameIdx));
+            }
+            c.close();
+        } catch (Throwable ignored) {
+        }
+        return cols;
     }
 
     /**
@@ -1260,7 +1386,6 @@ public class MainActivity extends Activity {
     private static final String[] LSPD_DB_PATHS = {
             "/data/adb/lspd/config/modules_config.db",
             "/data/adb/modules/zygisk_lsposed/config/modules_config.db",
-            "/data/adb/lspd/config/modules_config.db",
             "/data/adb/lspd/modules_config.db",
     };
 
@@ -1281,62 +1406,88 @@ public class MainActivity extends Activity {
                     return;
                 }
                 // 1. 定位数据库
-                String dbPath = null;
-                for (String p : LSPD_DB_PATHS) {
-                    try {
-                        byte[] out = suRun("ls -l " + p);
-                        if (new String(out, "UTF-8").trim().length() > 0) {
-                            dbPath = p;
-                            break;
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
+                String dbPath = locateLsposedDb(sb);
                 if (dbPath == null) {
-                    sb.append("❌ 未找到 LSPosed 配置数据库（已尝试 4 个常见路径）\n")
-                            .append("可能 LSPosed 未安装或路径不同，请手动打开 LSPosed 管理器查看。\n");
+                    sb.append("可能 LSPosed 未安装或路径不同，请手动打开 LSPosed 管理器查看。\n");
                     final String r = sb.toString();
                     runOnUiThread(() -> mLogView.setText(r));
                     return;
                 }
-                sb.append("数据库: ").append(dbPath).append("\n\n");
+                sb.append("\n");
 
-                // 2. 拷贝数据库到模块缓存目录（用 Android SQLite API 读，避免 sqlite3 命令缺失）
+                // 2. 拷贝数据库到模块缓存目录（含 -wal/-shm，用 Android SQLite API 读，
+                //    避免 sqlite3 命令缺失）。v1.8.6：自省 schema 后按真实结构查询。
                 String cachedDb = new File(getCacheDir(), "lspd_modules.db").getAbsolutePath();
-                String scopeJson = null;
+                java.util.LinkedHashSet<String> scopePkgs = new java.util.LinkedHashSet<>();
                 int enabled = -1;
                 try {
-                    suRun("cp " + dbPath + " " + cachedDb + " && chmod 644 " + cachedDb);
+                    suRun("cp " + dbPath + " " + cachedDb + "; "
+                            + "cp " + dbPath + "-wal " + cachedDb + "-wal 2>/dev/null; "
+                            + "cp " + dbPath + "-shm " + cachedDb + "-shm 2>/dev/null; "
+                            + "chmod 666 " + cachedDb + " " + cachedDb + "-wal "
+                            + cachedDb + "-shm 2>/dev/null; true");
                     SQLiteDatabase db = SQLiteDatabase.openDatabase(cachedDb, null,
                             SQLiteDatabase.OPEN_READONLY);
                     try {
-                        // 表名可能是 modules 或 scope，字段 mid/module_pkg_name
-                        android.database.Cursor c = null;
-                        try {
-                            c = db.rawQuery(
-                                    "SELECT scope FROM modules WHERE mid=?",
+                        java.util.LinkedHashSet<String> tables = new java.util.LinkedHashSet<>();
+                        android.database.Cursor tc = db.rawQuery(
+                                "SELECT name FROM sqlite_master WHERE type='table'", null);
+                        while (tc.moveToNext()) {
+                            tables.add(tc.getString(0));
+                        }
+                        tc.close();
+                        java.util.Set<String> modulesCols = tableColumns(db, "modules");
+                        if (tables.contains("modules") && modulesCols.contains("module_pkg_name")) {
+                            // 标准 LSPosed schema
+                            sb.append("schema: modules+scope 标准结构\n");
+                            int mid = -1;
+                            android.database.Cursor c = db.rawQuery(
+                                    "SELECT mid, enabled FROM modules WHERE module_pkg_name=?",
+                                    new String[]{MODULE_PKG});
+                            if (c.moveToFirst()) {
+                                mid = c.getInt(0);
+                                enabled = c.getInt(1);
+                            }
+                            c.close();
+                            if (mid >= 0) {
+                                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
+                                        new String[]{String.valueOf(mid)});
+                                while (c.moveToNext()) {
+                                    scopePkgs.add(c.getString(0));
+                                }
+                                c.close();
+                            }
+                        } else if (tables.contains("modules") && modulesCols.contains("scope")) {
+                            // 旧 JSON schema 兜底
+                            sb.append("schema: modules.scope JSON 结构\n");
+                            String scopeJson = null;
+                            android.database.Cursor c = db.rawQuery(
+                                    "SELECT scope, enabled FROM modules WHERE mid=?",
                                     new String[]{MODULE_PKG});
                             if (c.moveToFirst()) {
                                 scopeJson = c.getString(0);
+                                enabled = c.getInt(1);
                             }
                             c.close();
-                        } catch (Throwable ignored) {
-                        }
-                        // enabled 字段
-                        try {
-                            c = db.rawQuery(
-                                    "SELECT enabled FROM modules WHERE mid=?",
-                                    new String[]{MODULE_PKG});
-                            if (c.moveToFirst()) {
-                                enabled = c.getInt(0);
+                            if (scopeJson != null) {
+                                try {
+                                    JSONArray arr = new JSONArray(scopeJson);
+                                    for (int i = 0; i < arr.length(); i++) {
+                                        scopePkgs.add(arr.getString(i));
+                                    }
+                                } catch (JSONException ignored) {
+                                }
                             }
-                            c.close();
-                        } catch (Throwable ignored) {
+                        } else {
+                            sb.append("❌ 无法识别的数据库 schema，表: ").append(tables).append("\n");
+                            sb.append("  modules 列: ").append(modulesCols).append("\n");
                         }
                     } finally {
                         db.close();
                     }
                     new File(cachedDb).delete();
+                    new File(cachedDb + "-wal").delete();
+                    new File(cachedDb + "-shm").delete();
                 } catch (Throwable t) {
                     sb.append("❌ 读取数据库失败: ").append(t.getMessage()).append("\n");
                     final String r = sb.toString();
@@ -1352,14 +1503,13 @@ public class MainActivity extends Activity {
                     sb.append("⚠️ 无法确定模块启用状态\n");
                 }
 
-                if (scopeJson == null) {
-                    sb.append("❌ 未查到模块的作用域配置（modules 表无此模块记录）\n");
+                if (enabled == -1) {
+                    sb.append("❌ 未查到模块记录（modules 表无 com.syu.voice.hook）\n");
                     sb.append("请在 LSPosed 管理器 → 模块 → fytMusicVoiceInject 里勾选作用域。\n");
                 } else {
                     sb.append("\n作用域勾选状态（目标 App）：\n");
                     for (String pkg : FORCE_STOP_PKGS) {
-                        boolean checked = scopeJson.contains("\"" + pkg + "\"")
-                                || scopeJson.contains(pkg);
+                        boolean checked = scopePkgs.contains(pkg);
                         boolean installed;
                         try {
                             getPackageManager().getPackageInfo(pkg, 0);

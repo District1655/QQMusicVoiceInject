@@ -303,9 +303,13 @@ public final class QQMusicToolProxy {
                 return QQMusicController.FOLDER_PERSONAL_RADIO;
             }
             // 我喜欢/收藏（含 ASR 错字场景：title="收藏的歌丹" 含"收藏"照样命中；
-            // "你喜欢"="我喜欢"的同音/近音误识别）
+            // "你喜欢"="我喜欢"的同音/近音误识别；
+            // v1.8.6：title 以"喜欢"结尾且前面还有内容也视为收藏——实测 ASR 把
+            // "播放我喜欢"识别成"china喜欢"，不含"我喜欢"字样但语义就是收藏；
+            // 单用"喜欢"（length=2）可能是点歌《喜欢》，不走此规则）
             if (t.contains("收藏") || t.contains("我喜欢") || t.contains("你喜欢")
-                    || t.contains("喜欢的歌") || t.contains("喜欢的音乐")) {
+                    || t.contains("喜欢的歌") || t.contains("喜欢的音乐")
+                    || (t.length() > 2 && t.endsWith("喜欢"))) {
                 return QQMusicController.FOLDER_FAVOURITE;
             }
             return -1;
