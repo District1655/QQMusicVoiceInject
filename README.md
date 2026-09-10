@@ -66,11 +66,18 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
   - "播放每日30首 / 每日推荐" → 取每日30首歌曲列表整列表播放（getSongList type=108 → playSongMid）
   - "播放排行榜 / 榜单 / 热歌榜 / 新歌榜 / 飙升榜" → 取官方排行榜首个榜单歌曲整列表播放（getFolderList type=2 → getSongList type=102 → playSongMid）
   - "收藏这首歌 / 取消收藏" → 收藏当前播放歌曲（v1.8.0 修复：改由 QQ音乐原生收藏链路处理）
-  - 歌单话术经 TXZ NLU 本地拦截补抓（云端语料无"歌单/排行榜/每日30首"概念）；v1.8.1 起车助理侧再增关键词兜底——云端误判成点歌时（如"播放我喜欢""收藏的歌丹"）按 title 二次识别直接路由歌单，不依赖 TXZ 进程是否已更新
+  - 歌单话术经 TXZ NLU 本地拦截补抓（云端语料无"歌单/排行榜/每日30首"概念）；v1.8.1 起车助理侧再增关键词兜底——云端误判成点歌时（如"播放我喜欢""收藏的歌丹"）按 title 二次识别直接路由歌单，不依赖 TXZ 进程是否已更新；v1.8.3 扩充"你喜欢""三零"等 ASR 错字覆盖
 - **QQ音乐进程稳定性与副作用治理**（v1.8.1）：
   - 修复播放统计协程 NPE 崩溃（ActiveAppManager 活跃第三方包名为 null）——模块进程内反射调用不走 Binder 授权，该字段恒为 null，播放一段时间后 QQ音乐崩溃重启，歌单播放随之失败
   - 自动关闭 QQ音乐"边听边存"（TvPreferences savewhenplay 云控默认开启），不再播放一首就下载一首到本地
-- **安装生效须知**：模块更新后必须**强制停止 QQ音乐HD 和 TXZ语音（或直接重启车机）**；LSPosed 作用域三个 App 全勾选：车助理、TXZ语音(com.txznet.txz)、QQ音乐HD
+- **安装生效与作用域管理**（v1.8.4 起）：
+  - 模块 App「一键勾选作用域并重启应用」：自动把已安装目标包写入 LSPosed 作用域并 enabled=1，然后 force-stop 使其重载模块（替代手动去 LSPosed 管理器勾选+重启）
+  - 模块 App「检测 LSPosed 作用域勾选状态」：root 读取 LSPosed 数据库，列出各 App 勾选状态
+  - 模块 App「强制停止作用域应用」：仅重启不修改作用域
+  - LSPosed 作用域需勾选：车助理(com.syu.voice)、TXZ语音(com.txznet.txz)、QQ音乐HD(com.tencent.qqmusicpad)
+- **日志诊断**（v1.8.5 起）：
+  - 导出日志时一并导出 LSPosed 框架注入日志（`lsposed/` 目录 + `logcat_lsposed.txt`），可直接确认模块是否注入目标进程
+  - 「查看运行日志」标注各进程模块加载版本
 - **语音控制**：播放 / 暂停 / 继续 / 上一首 / 下一首 / 切歌（v1.3.1+ 适配 PlayerService 绑定状态）
 - **自动拉起**：QQ音乐未运行时先启动再操作（v1.3.1）
 - **播放状态上报**：isPlaying 保底 true + onStatusChange 主动上报，维持 TXZ 音乐场景（v1.3.2）
@@ -96,18 +103,18 @@ fytMusicVoiceInject/
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.4
+        └── java/com/syu/voice/hook/   # v1.8.5
             ├── MainHook.java         # Xposed 入口（进程分流）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存）
             ├── ApiHolder.java        # ApiMethodsImpl 实例持有 + voicePlay/控制/playFolderType/getSongList/playSongMid；v1.8.1 收藏 101 自动重试
             ├── MusicToolInject.java  # 白名单注入（5 个目标包名）
-            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底）
-            ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；action=30 歌单 m0=201/104/108/2）
+            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充）
+            ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；action=30 歌单 m0=201/104/108/2；v1.8.3 原生 action 兜底）
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录）
             ├── ContextHolder.java    # Application Context 持有
             ├── UpdateManager.java    # GitHub Releases 检查/下载/安装
-            └── MainActivity.java     # 模块 UI（日志/更新/重启/日志开关；v1.8.1 加载状态诊断；v1.8.2 强制停止作用域应用按钮）
+            └── MainActivity.java     # 模块 UI（日志/更新/重启/日志开关；v1.8.1 加载状态诊断；v1.8.2 强制停止按钮；v1.8.3 作用域检测；v1.8.4 一键勾选作用域；v1.8.5 LSPosed 日志导出）
 ```
 
 ## 构建
@@ -158,8 +165,10 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.3 | 定位 v1.8.2 收藏失败根因：LSPosed 作用域未勾选 QQ音乐HD/TXZ → action=30 广播被原生丢弃。修复：①playFolder 增加 QQ 原生 action 兜底（收藏→action=4，排行榜→action=7），QQ 进程未注入时也能打开对应页面；②车助理侧关键词兜底扩充"你喜欢""三零"等 ASR 错字；③模块 App 新增"检测 LSPosed 作用域勾选状态"按钮（root 读 LSPosed 配置数据库，列出各 App 勾选状态）；④parseLoadedVersion 取最新加载版本（修复跨天旧记录误报）（当前版本） |
-| v1.8.2 | 模块 App 新增"强制停止作用域应用"按钮：升级后一键 `am force-stop` 所有作用域宿主进程（车助理/TXZ/QQ音乐等），使其重新加载最新模块代码；记录每个 App 停止前后 pid（系统服务被自动拉起时 pid 变化即视为生效）；结果同时写 UI 日志区和模块 App 文件日志（修复模块 App 进程此前从未初始化文件日志的问题） |
+| v1.8.5 | 导出日志时一并导出 LSPosed 框架注入日志：root 打包 `/data/adb/lspd/log/` 等路径日志到 `lsposed/` 目录；logcat 按 LSPosed/LSPosed-Bridge/LSPosedManager/Xposed 标签过滤生成 `logcat_lsposed.txt`；info.txt 列出 LSPosed 日志文件清单（当前版本） |
+| v1.8.4 | 「强制停止作用域应用」按钮升级为「一键勾选作用域并重启应用」：自动定位 LSPosed 配置数据库，把已安装目标包合并写入模块 scope 并 enabled=1，备份+清 WAL+恢复权限属主，然后 force-stop 所有目标应用重载模块；全过程记录日志 |
+| v1.8.3 | 定位 v1.8.2 收藏失败根因：LSPosed 作用域未勾选 QQ音乐HD/TXZ → action=30 广播被原生丢弃。修复：①playFolder 增加 QQ 原生 action 兜底（收藏→action=4，排行榜→action=7）；②车助理侧关键词兜底扩充"你喜欢""三零"等 ASR 错字；③模块 App 新增"检测 LSPosed 作用域勾选状态"按钮；④parseLoadedVersion 取最新加载版本 |
+| v1.8.2 | 模块 App 新增"强制停止作用域应用"按钮：一键 `am force-stop` 所有作用域宿主进程使其重载模块代码；记录每个 App 停止前后 pid；修复模块 App 进程此前从未初始化文件日志的问题 |
 | v1.8.1 | 修复 v1.8.0 实测两大问题：①QQ音乐HD 播放统计协程 NPE 崩溃（ActiveAppManager 活跃第三方包名为 null——模块进程内反射不走 Binder 授权，该字段恒为 null），hook b() null 兜底 + 主动 f("com.syu.voice")；②QQ音乐"边听边存"云控默认开启导致播放即下载，hook TvPreferences.d0() 强制 false + n1(false) 持久化关闭。收藏播放冷启动 code=101（本地收藏缓存空）按 4/8/15s 自动重试；车助理侧新增歌单关键词兜底（云端把"我喜欢/收藏的歌单"误判成点歌时直接路由，不依赖 TXZ 进程更新）；TXZ 进程补文件日志初始化；日志查看/导出标注各进程模块加载版本，缺进程给出 LSPosed 作用域指引 |
 | v1.8.0 | 歌单二期：新增语音直放"每日30首"（getSongList type=108→playSongMid）、"排行榜/热歌榜/新歌榜"（getFolderList type=2→getSongList type=102→playSongMid）；"推荐"话术语义对齐首页"猜你喜欢"（个人电台 104）；NLU 对云端误识别为点歌的歌单话术强制覆盖（修复"收藏的歌单"被 ASR 成"收藏的歌丹"当歌名搜索）；修复 v1.7.0 回归——"收藏这首歌"被 hook 误拦截（m0=5/6 改放行原生 receiver）；歌单指令经哨兵 model.title 跨进程路由 |
 | v1.7.0 | 新增语音歌单："播放收藏的歌单/我喜欢的音乐"→QQ音乐「我喜欢」（playFolderType 201，需登录）；"播放推荐歌单/每日推荐/随便听听"→QQ音乐个人电台推荐流（playFolderType 104）；"收藏/取消收藏这首歌"接线原生 m0=5/6。TXZ 侧 hook 云知声 NLU 转换出口本地补抓歌单话术（云端语料无"歌单"概念，原版回"不知道你在说啥"） |
