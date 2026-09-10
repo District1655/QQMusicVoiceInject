@@ -133,20 +133,46 @@ public final class QQMusicController {
      * ApiMethodsImpl.playFolderType 后台播放（不跳页面）。
      * 原生 receiver 不识别 action=30，故冷启动时依赖 ensureRunning 拉起 QQ音乐 +
      * 4/9/15/25s 重发覆盖 hook 就绪窗口（与点歌/控制同一机制）。
+     *
+     * v1.8.3：若 LSPosed 作用域未勾选 QQ音乐（进程内模块未注入），action=30 会被
+     * 原生 receiver 直接丢弃。对此增加 QQ 原生 action 兜底：
+     *   - 201 收藏 → 同时发 action=4（我的收藏，原生支持，m1=true 尝试直接播放）
+     *   - 2 排行榜 → 同时发 action=7（排行榜，原生支持）
+     * 104（猜你喜欢）/108（每日30首）原生无对应 action，仅靠 action=30 + 模块拦截。
      */
     public void playFolder(int folderType) {
         String url = mScheme + "://?action=" + ACTION_FOLDER_PLAY + "&m0=" + folderType;
         String label;
+        int nativeAction = -1;   // QQ 原生支持的 action（未注入时兜底）
         switch (folderType) {
-            case FOLDER_FAVOURITE: label = "=收藏歌曲"; break;
-            case FOLDER_PERSONAL_RADIO: label = "=猜你喜欢"; break;
-            case FOLDER_DAILY_30: label = "=每日30首"; break;
-            case FOLDER_RANK: label = "=排行榜"; break;
-            default: label = ""; break;
+            case FOLDER_FAVOURITE:
+                label = "=收藏歌曲";
+                nativeAction = 4;   // 原生"我的收藏"
+                break;
+            case FOLDER_PERSONAL_RADIO:
+                label = "=猜你喜欢";
+                break;
+            case FOLDER_DAILY_30:
+                label = "=每日30首";
+                break;
+            case FOLDER_RANK:
+                label = "=排行榜";
+                nativeAction = 7;   // 原生"排行榜"
+                break;
+            default:
+                label = "";
+                break;
         }
         String desc = "playFolder(" + folderType + label + ")";
         boolean started = ensureRunning();
         sendSchemeBroadcast(url, desc);
+        // 原生 action 兜底：与 action=30 并发发出。QQ 进程注入了模块时，
+        // action=30 被拦截走后台播放，原生 action 被同模块拦截或忽略；
+        // 未注入时，原生 action 由 QQ 原生 receiver 处理打开对应页面。
+        if (nativeAction > 0) {
+            String nativeUrl = mScheme + "://?action=" + nativeAction + "&m1=true";
+            sendSchemeBroadcast(nativeUrl, desc + " 原生兜底 action=" + nativeAction);
+        }
         if (started) {
             scheduleRetry(url, desc + " 冷启动重发");
         }

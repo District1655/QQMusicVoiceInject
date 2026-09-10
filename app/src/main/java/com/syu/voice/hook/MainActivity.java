@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -179,6 +180,15 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(forceStopBtn);
+
+        Button checkScopeBtn = makeButton("检测 LSPosed 作用域勾选状态");
+        checkScopeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                checkLsposedScope();
+            }
+        });
+        root.addView(checkScopeBtn);
 
         // 日志区域：固定高度，内部 ScrollView 独立滚动
         ScrollView logScroll = new ScrollView(this);
@@ -433,8 +443,10 @@ public class MainActivity extends Activity {
 
     /**
      * v1.8.1：从某进程日志内容解析"模块加载"记录里的版本号。
-     * 车助理: "模块加载，进程: ...，版本: 1.8.1"；QQ/TXZ: "模块加载（…进程）v1.8.1 ..."。
-     * @return 版本号字符串（如 1.8.1）；无加载记录返回 null
+     * v1.8.3：取最后一条匹配（最新加载的版本），而非第一条——日志文件跨天累积，
+     * 第一条可能是几天前的旧版本。
+     * 车助理: "模块加载，进程: ...，版本: 1.8.2"；QQ/TXZ: "模块加载（…进程）v1.8.2 ..."。
+     * @return 版本号字符串（如 1.8.2）；无加载记录返回 null
      */
     private static String parseLoadedVersion(byte[] data) {
         if (data == null || data.length == 0) {
@@ -445,9 +457,11 @@ public class MainActivity extends Activity {
             java.util.regex.Matcher m = java.util.regex.Pattern.compile(
                     "模块加载[^\\n]*?(?:版本[: ]+|v)([0-9]+\\.[0-9]+\\.[0-9]+)")
                     .matcher(text);
-            if (m.find()) {
-                return m.group(1);
+            String last = null;
+            while (m.find()) {
+                last = m.group(1);
             }
+            return last;
         } catch (Throwable ignored) {
         }
         return null;
@@ -980,5 +994,142 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             return "";
         }
+    }
+
+    // ------------------------------------------------------------------
+    // LSPosed 作用域检测（读取 LSPosed 配置数据库，列出各作用域勾选状态）
+    // ------------------------------------------------------------------
+
+    private static final String MODULE_PKG = "com.syu.voice.hook";
+    /** LSPosed 配置数据库可能的路径（不同版本/安装方式） */
+    private static final String[] LSPD_DB_PATHS = {
+            "/data/adb/lspd/config/modules_config.db",
+            "/data/adb/modules/zygisk_lsposed/config/modules_config.db",
+            "/data/adb/lspd/config/modules_config.db",
+            "/data/adb/lspd/modules_config.db",
+    };
+
+    private void checkLsposedScope() {
+        mLogView.setText("正在检测 LSPosed 作用域…（需要 Root）\n");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                StringBuilder sb = new StringBuilder();
+                sb.append("===== LSPosed 作用域检测 ")
+                        .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                                .format(new Date()))
+                        .append(" =====\n");
+                if (!hasRoot()) {
+                    sb.append("❌ 无 Root 权限，无法读取 LSPosed 配置\n");
+                    final String r = sb.toString();
+                    runOnUiThread(() -> mLogView.setText(r));
+                    return;
+                }
+                // 1. 定位数据库
+                String dbPath = null;
+                for (String p : LSPD_DB_PATHS) {
+                    try {
+                        byte[] out = suRun("ls -l " + p);
+                        if (new String(out, "UTF-8").trim().length() > 0) {
+                            dbPath = p;
+                            break;
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (dbPath == null) {
+                    sb.append("❌ 未找到 LSPosed 配置数据库（已尝试 4 个常见路径）\n")
+                            .append("可能 LSPosed 未安装或路径不同，请手动打开 LSPosed 管理器查看。\n");
+                    final String r = sb.toString();
+                    runOnUiThread(() -> mLogView.setText(r));
+                    return;
+                }
+                sb.append("数据库: ").append(dbPath).append("\n\n");
+
+                // 2. 拷贝数据库到模块缓存目录（用 Android SQLite API 读，避免 sqlite3 命令缺失）
+                String cachedDb = new File(getCacheDir(), "lspd_modules.db").getAbsolutePath();
+                String scopeJson = null;
+                int enabled = -1;
+                try {
+                    suRun("cp " + dbPath + " " + cachedDb + " && chmod 644 " + cachedDb);
+                    SQLiteDatabase db = SQLiteDatabase.openDatabase(cachedDb, null,
+                            SQLiteDatabase.OPEN_READONLY);
+                    try {
+                        // 表名可能是 modules 或 scope，字段 mid/module_pkg_name
+                        android.database.Cursor c = null;
+                        try {
+                            c = db.rawQuery(
+                                    "SELECT scope FROM modules WHERE mid=?",
+                                    new String[]{MODULE_PKG});
+                            if (c.moveToFirst()) {
+                                scopeJson = c.getString(0);
+                            }
+                            c.close();
+                        } catch (Throwable ignored) {
+                        }
+                        // enabled 字段
+                        try {
+                            c = db.rawQuery(
+                                    "SELECT enabled FROM modules WHERE mid=?",
+                                    new String[]{MODULE_PKG});
+                            if (c.moveToFirst()) {
+                                enabled = c.getInt(0);
+                            }
+                            c.close();
+                        } catch (Throwable ignored) {
+                        }
+                    } finally {
+                        db.close();
+                    }
+                    new File(cachedDb).delete();
+                } catch (Throwable t) {
+                    sb.append("❌ 读取数据库失败: ").append(t.getMessage()).append("\n");
+                    final String r = sb.toString();
+                    runOnUiThread(() -> mLogView.setText(r));
+                    return;
+                }
+
+                if (enabled == 0) {
+                    sb.append("❌ 模块在 LSPosed 中未启用！请在 LSPosed 管理器里打开 fytMusicVoiceInject 开关。\n");
+                } else if (enabled == 1) {
+                    sb.append("✅ 模块已启用\n");
+                } else {
+                    sb.append("⚠️ 无法确定模块启用状态\n");
+                }
+
+                if (scopeJson == null) {
+                    sb.append("❌ 未查到模块的作用域配置（modules 表无此模块记录）\n");
+                    sb.append("请在 LSPosed 管理器 → 模块 → fytMusicVoiceInject 里勾选作用域。\n");
+                } else {
+                    sb.append("\n作用域勾选状态（目标 App）：\n");
+                    for (String pkg : FORCE_STOP_PKGS) {
+                        boolean checked = scopeJson.contains("\"" + pkg + "\"")
+                                || scopeJson.contains(pkg);
+                        boolean installed;
+                        try {
+                            getPackageManager().getPackageInfo(pkg, 0);
+                            installed = true;
+                        } catch (Throwable t) {
+                            installed = false;
+                        }
+                        sb.append("  ").append(checked ? "✅" : "❌").append(" ").append(pkg);
+                        if (!installed) {
+                            sb.append("（未安装）");
+                        } else if (!checked) {
+                            sb.append(" ← 未勾选！请在 LSPosed 勾选此应用");
+                        }
+                        sb.append("\n");
+                    }
+                }
+
+                sb.append("\n说明：车助理(com.syu.voice)、TXZ语音(com.txznet.txz)、")
+                        .append("QQ音乐HD(com.tencent.qqmusicpad) 三个必须全部勾选，")
+                        .append("否则歌单/收藏播放无法生效。\n");
+
+                LogManager.i(TAG, "LSPosed 作用域检测结果:\n" + sb.toString());
+                final String result = sb.toString();
+                runOnUiThread(() -> mLogView.setText(result));
+            }
+        }).start();
     }
 }

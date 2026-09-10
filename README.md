@@ -92,11 +92,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10802
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10803
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.2
+        └── java/com/syu/voice/hook/   # v1.8.3
             ├── MainHook.java         # Xposed 入口（进程分流）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存）
@@ -158,7 +158,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.2 | 模块 App 新增"强制停止作用域应用"按钮：升级后一键 `am force-stop` 所有作用域宿主进程（车助理/TXZ/QQ音乐等），使其重新加载最新模块代码；记录每个 App 停止前后 pid（系统服务被自动拉起时 pid 变化即视为生效）；结果同时写 UI 日志区和模块 App 文件日志（修复模块 App 进程此前从未初始化文件日志的问题）（当前版本） |
+| v1.8.3 | 定位 v1.8.2 收藏失败根因：LSPosed 作用域未勾选 QQ音乐HD/TXZ → action=30 广播被原生丢弃。修复：①playFolder 增加 QQ 原生 action 兜底（收藏→action=4，排行榜→action=7），QQ 进程未注入时也能打开对应页面；②车助理侧关键词兜底扩充"你喜欢""三零"等 ASR 错字；③模块 App 新增"检测 LSPosed 作用域勾选状态"按钮（root 读 LSPosed 配置数据库，列出各 App 勾选状态）；④parseLoadedVersion 取最新加载版本（修复跨天旧记录误报）（当前版本） |
+| v1.8.2 | 模块 App 新增"强制停止作用域应用"按钮：升级后一键 `am force-stop` 所有作用域宿主进程（车助理/TXZ/QQ音乐等），使其重新加载最新模块代码；记录每个 App 停止前后 pid（系统服务被自动拉起时 pid 变化即视为生效）；结果同时写 UI 日志区和模块 App 文件日志（修复模块 App 进程此前从未初始化文件日志的问题） |
 | v1.8.1 | 修复 v1.8.0 实测两大问题：①QQ音乐HD 播放统计协程 NPE 崩溃（ActiveAppManager 活跃第三方包名为 null——模块进程内反射不走 Binder 授权，该字段恒为 null），hook b() null 兜底 + 主动 f("com.syu.voice")；②QQ音乐"边听边存"云控默认开启导致播放即下载，hook TvPreferences.d0() 强制 false + n1(false) 持久化关闭。收藏播放冷启动 code=101（本地收藏缓存空）按 4/8/15s 自动重试；车助理侧新增歌单关键词兜底（云端把"我喜欢/收藏的歌单"误判成点歌时直接路由，不依赖 TXZ 进程更新）；TXZ 进程补文件日志初始化；日志查看/导出标注各进程模块加载版本，缺进程给出 LSPosed 作用域指引 |
 | v1.8.0 | 歌单二期：新增语音直放"每日30首"（getSongList type=108→playSongMid）、"排行榜/热歌榜/新歌榜"（getFolderList type=2→getSongList type=102→playSongMid）；"推荐"话术语义对齐首页"猜你喜欢"（个人电台 104）；NLU 对云端误识别为点歌的歌单话术强制覆盖（修复"收藏的歌单"被 ASR 成"收藏的歌丹"当歌名搜索）；修复 v1.7.0 回归——"收藏这首歌"被 hook 误拦截（m0=5/6 改放行原生 receiver）；歌单指令经哨兵 model.title 跨进程路由 |
 | v1.7.0 | 新增语音歌单："播放收藏的歌单/我喜欢的音乐"→QQ音乐「我喜欢」（playFolderType 201，需登录）；"播放推荐歌单/每日推荐/随便听听"→QQ音乐个人电台推荐流（playFolderType 104）；"收藏/取消收藏这首歌"接线原生 m0=5/6。TXZ 侧 hook 云知声 NLU 转换出口本地补抓歌单话术（云端语料无"歌单"概念，原版回"不知道你在说啥"） |

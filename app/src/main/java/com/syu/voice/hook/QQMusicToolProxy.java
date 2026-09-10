@@ -289,9 +289,10 @@ public final class QQMusicToolProxy {
                     || t.contains("巅峰榜") || t.contains("音乐榜") || t.contains("流行榜")) {
                 return QQMusicController.FOLDER_RANK;
             }
-            // 每日30首/每日推荐
+            // 每日30首/每日推荐（含 ASR 错字："三零"="30"）
             if (t.contains("每日30") || t.contains("每日三十") || t.contains("每天30")
-                    || t.contains("每天三十") || t.contains("每日推荐") || t.contains("每天推荐")) {
+                    || t.contains("每天三十") || t.contains("每日推荐") || t.contains("每天推荐")
+                    || t.contains("三零") || t.contains("30首")) {
                 return QQMusicController.FOLDER_DAILY_30;
             }
             // 猜你喜欢/随便听听/推荐歌曲（个人电台）——先于"我喜欢"规则，避免误吞"猜你喜欢"
@@ -301,8 +302,9 @@ public final class QQMusicToolProxy {
                         && (t.contains("歌") || t.contains("音乐") || t.contains("曲")))) {
                 return QQMusicController.FOLDER_PERSONAL_RADIO;
             }
-            // 我喜欢/收藏（含 ASR 错字场景：title="收藏的歌丹" 含"收藏"照样命中）
-            if (t.contains("收藏") || t.contains("我喜欢")
+            // 我喜欢/收藏（含 ASR 错字场景：title="收藏的歌丹" 含"收藏"照样命中；
+            // "你喜欢"="我喜欢"的同音/近音误识别）
+            if (t.contains("收藏") || t.contains("我喜欢") || t.contains("你喜欢")
                     || t.contains("喜欢的歌") || t.contains("喜欢的音乐")) {
                 return QQMusicController.FOLDER_FAVOURITE;
             }
