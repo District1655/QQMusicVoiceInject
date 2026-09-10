@@ -683,11 +683,61 @@ public class MainActivity extends Activity {
                 if (r.logcatOk) {
                     putZipEntry(zos, "logcat/logcat_recent.txt", logcatAll);
                     putZipEntry(zos, "logcat/logcat_filtered.txt", filterLines(logcatAll));
+                    // v1.8.5：LSPosed 框架日志（模块注入/加载记录）
+                    byte[] lsposedLogcat = filterLogcatTags(logcatAll,
+                            new String[]{"LSPosed", "LSPosed-Bridge", "LSPosedManager",
+                                    "Xposed", "XSharedPreferences"});
+                    if (lsposedLogcat != null && lsposedLogcat.length > 0) {
+                        putZipEntry(zos, "logcat/logcat_lsposed.txt", lsposedLogcat);
+                    }
                 } else {
                     info.add("logcat 不可读（无 root 且 ROM 限制）");
                 }
 
-                // 4) info.txt
+                // v1.8.5：4) LSPosed 框架日志文件（/data/adb/lspd/log/ 等）
+                info.add("");
+                info.add("LSPosed 框架日志:");
+                int lsposedFileCount = 0;
+                String[] lsposedLogDirs = {
+                        "/data/adb/lspd/log/",
+                        "/data/misc/lspd/log/",
+                        "/data/adb/lspd/",
+                };
+                if (r.rootOk) {
+                    for (String dir : lsposedLogDirs) {
+                        try {
+                            byte[] ls = suRun("ls -1 " + dir + " 2>/dev/null");
+                            String files = new String(ls, "UTF-8").trim();
+                            if (files.isEmpty()) {
+                                continue;
+                            }
+                            for (String fn : files.split("\n")) {
+                                fn = fn.trim();
+                                if (fn.isEmpty()) {
+                                    continue;
+                                }
+                                // 只取日志文件，排除子目录
+                                try {
+                                    byte[] fdata = suRun("cat " + dir + fn);
+                                    if (fdata != null && fdata.length > 0) {
+                                        // 目录名映射到 zip 内路径
+                                        String zipDir = "lsposed";
+                                        putZipEntry(zos, zipDir + "/" + fn, fdata);
+                                        info.add("  " + dir + fn + " (" + fdata.length + "B)");
+                                        lsposedFileCount++;
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+                if (lsposedFileCount == 0) {
+                    info.add("  未找到 LSPosed 日志文件（无 root 或路径不同）");
+                }
+
+                // 5) info.txt
                 putZipEntry(zos, "info.txt",
                         TextUtils.join("\n", info).getBytes("UTF-8"));
             } finally {
@@ -802,6 +852,30 @@ public class MainActivity extends Activity {
                 if (lower.contains("fytmusic") || lower.contains("xposed")
                         || lower.contains("lsposed") || lower.contains("androidruntime")) {
                     sb.append(line).append('\n');
+                }
+            }
+            return sb.toString().getBytes("UTF-8");
+        } catch (Throwable t) {
+            return new byte[0];
+        }
+    }
+
+    /**
+     * v1.8.5：按 logcat 标签精确过滤。Android logcat 格式为
+     * "MM-DD HH:mm:ss.sss  PID  TID LEVEL TAG: msg"，标签在级别后、冒号前。
+     * 匹配 " TAG:" 前缀，避免误伤消息正文。
+     */
+    private static byte[] filterLogcatTags(byte[] logcat, String[] tags) {
+        try {
+            String[] lines = new String(logcat, "UTF-8").split("\n");
+            StringBuilder sb = new StringBuilder();
+            for (String line : lines) {
+                for (String tag : tags) {
+                    // 匹配 " TAG:"（空格+标签+冒号），兼容 brief/threadtime 格式
+                    if (line.contains(" " + tag + ":")) {
+                        sb.append(line).append('\n');
+                        break;
+                    }
                 }
             }
             return sb.toString().getBytes("UTF-8");
