@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.8.7）
+## 支持列表（v1.8.8）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -100,11 +100,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10807
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10808
     └── src/main/
-        ├── AndroidManifest.xml   # LSPosed 声明（作用域含 com.txznet.txz）+ MainActivity
+        ├── AndroidManifest.xml   # LSPosed 声明（v1.8.8 起 xposedscope 含 7 个目标包，含网易云两包）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.7
+        └── java/com/syu/voice/hook/   # v1.8.8
             ├── MainHook.java         # Xposed 入口（进程分流；v1.8.6 XposedBridge.log 全链路埋点；v1.8.7 attachBaseContext+initEarly）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化；v1.8.6 LSPosed 日志埋点；v1.8.7 attachBaseContext）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存；v1.8.6 LSPosed 日志埋点；v1.8.7 attachBaseContext+pad类名+initEarly）
@@ -115,7 +115,12 @@ fytMusicVoiceInject/
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录；v1.8.7 initEarly 无 Context 早期初始化）
             ├── ContextHolder.java    # Application Context 持有
             ├── UpdateManager.java    # GitHub Releases 检查/下载/安装
-            └── MainActivity.java     # 模块 UI（日志/更新/重启/日志开关；v1.8.1 加载状态诊断；v1.8.2 强制停止按钮；v1.8.3 作用域检测；v1.8.4 一键勾选作用域；v1.8.5 LSPosed 日志导出；v1.8.6 作用域 DB schema 自省修复）
+            ├── MainActivity.java     # 模块 UI 编排（v1.8.8 起纯 UI/线程/对话框，业务下沉到下列 5 个类；526 行）
+            ├── ScopeConfig.java      # v1.8.8 常量：模块包名/7 个作用域包/日志包列表/LSPosed DB 路径
+            ├── RootShell.java        # v1.8.8 root 执行：suRun/readAll/root 缓存/pidof/reboot
+            ├── LogCollector.java     # v1.8.8 各进程日志读取/清空/zip 导出（ExportResult）
+            ├── LsposedScopeManager.java # v1.8.8 modules_config.db schema 自省/作用域写入/只读检测
+            └── AppControl.java       # v1.8.8 am force-stop 作用域应用 + pid 前后比对
 ```
 
 ## 构建
@@ -166,7 +171,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.7 | ①hook Application.attachBaseContext 替代/补充 onCreate——反编译发现 MusicApplication.onCreate 的 super.onCreate() 被 SwordProxy 云控条件跳过，导致 Application.onCreate 回调不触发；attachBaseContext 由框架调用且子类不可能跳过；②LogManager.initEarly() 不依赖 Context 在 handleLoadPackage 入口即写文件日志；③BroadcastReceiver/ApiService 尝试 qqmusicpad 子类名；④所有 hook 步骤补全 xlog（当前版本） |
+| v1.8.8 | 工程治理：①manifest xposedscope 补齐网易云两包（文档记 v1.4.1 已加但实际从未包含，LSPosed 管理器无法勾选；此前靠一键勾选写 DB 绕过）；②MainActivity 1540 行拆成 UI + ScopeConfig/RootShell/LogCollector/LsposedScopeManager/AppControl 五个职责类（行为不变，删两处死代码）；③cert.txt 换成真实签名信息；④SDK 迁到 D:\android-sdk（当前版本） |
+| v1.8.7 | ①hook Application.attachBaseContext 替代/补充 onCreate——反编译发现 MusicApplication.onCreate 的 super.onCreate() 被 SwordProxy 云控条件跳过，导致 Application.onCreate 回调不触发；attachBaseContext 由框架调用且子类不可能跳过；②LogManager.initEarly() 不依赖 Context 在 handleLoadPackage 入口即写文件日志；③BroadcastReceiver/ApiService 尝试 qqmusicpad 子类名；④所有 hook 步骤补全 xlog |
 | v1.8.6 | ①模块入口/分发/hook 注册全链路改走 XposedBridge.log（`[fyt]` 前缀，直接落 LSPosed modules.log，导出可查），解决"模块类已加载但 hook 是否执行无法证实"的盲区；②重写作用域读写：sqlite_master 自省适配 LSPosed 1.9.x 真实 schema（modules+scope 两表），修复一键勾选 chmod 644 只读打不开数据库、检测 SQL 表结构假设错误两个 bug；写回 cp 覆盖保留属主/SELinux 上下文；③收藏关键词兜底扩充：title 以"喜欢"结尾（如 ASR 误识"china喜欢"）→ 收藏歌单 |
 | v1.8.5 | 导出日志时一并导出 LSPosed 框架注入日志：root 打包 `/data/adb/lspd/log/` 等路径日志到 `lsposed/` 目录；logcat 按 LSPosed/LSPosed-Bridge/LSPosedManager/Xposed 标签过滤生成 `logcat_lsposed.txt`；info.txt 列出 LSPosed 日志文件清单 |
 | v1.8.4 | 「强制停止作用域应用」按钮升级为「一键勾选作用域并重启应用」：自动定位 LSPosed 配置数据库，把已安装目标包合并写入模块 scope 并 enabled=1，备份+清 WAL+恢复权限属主，然后 force-stop 所有目标应用重载模块；全过程记录日志 |

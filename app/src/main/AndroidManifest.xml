@@ -42,9 +42,11 @@
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
+        <!-- v1.8.8：补齐网易云车机版两包（REFERENCE.md 记 v1.4.1 已加但实际 manifest 从未包含，
+             导致 LSPosed 管理器里无法勾选网易云为作用域）。顺序与 FORCE_STOP_PKGS 对齐。 -->
         <meta-data
             android:name="xposedscope"
-            android:value="com.syu.voice,com.tencent.qqmusiccar,com.tencent.qqmusicpad,com.tencent.qqmusic,com.txznet.txz" />
+            android:value="com.syu.voice,com.txznet.txz,com.tencent.qqmusiccar,com.tencent.qqmusicpad,com.tencent.qqmusic,com.netease.cloudmusic.iot,com.netease.cloudmusic" />
     </application>
 
 </manifest>

@@ -2,15 +2,8 @@ package com.syu.voice.hook;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.Context;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.database.sqlite.SQLiteDatabase;
-import android.graphics.Typeface;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
-import android.provider.Settings;
+import android.graphics.Typeface;
 import android.text.TextUtils;
 import android.view.View;
 import android.widget.Button;
@@ -21,28 +14,20 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileReader;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
- * 模块主界面：查看版本 / 检查更新 / 下载安装 / 查看运行日志。
- * 无资源文件依赖，全部代码构建 UI，避免引入额外资源编译。
+ * 模块主界面（v1.8.8 起为纯 UI 编排）：查看版本 / 检查更新 / 下载安装 / 查看运行日志 /
+ * 作用域配置与检测。无资源文件依赖，全部代码构建 UI，避免引入额外资源编译。
+ *
+ * 业务逻辑已拆出：
+ * {@link RootShell}             —— root 命令执行 / 设备重启 / pid 查询
+ * {@link LogCollector}          —— 各进程日志读取 / 清空 / zip 导出
+ * {@link LsposedScopeManager}   —— LSPosed 配置库作用域读写与检测
+ * {@link AppControl}            —— 强制停止作用域应用
+ * {@link ScopeConfig}           —— 作用域包名 / 路径常量
  */
 public class MainActivity extends Activity {
 
@@ -53,6 +38,11 @@ public class MainActivity extends Activity {
     private Button mDownloadBtn;
     private TextView mLogView;
 
+    private RootShell mShell;
+    private LogCollector mCollector;
+    private LsposedScopeManager mScopeMgr;
+    private AppControl mAppControl;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -62,6 +52,10 @@ public class MainActivity extends Activity {
             LogManager.init(this);
         } catch (Throwable ignored) {
         }
+        mShell = new RootShell();
+        mCollector = new LogCollector(this, mShell);
+        mScopeMgr = new LsposedScopeManager(this);
+        mAppControl = new AppControl(this, mShell);
         buildUi();
     }
 
@@ -227,57 +221,6 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    /** 检查是否有读取 /sdcard 日志的权限（Android 11+ 用 isExternalStorageManager，10 及以下用运行时权限） */
-    private boolean hasStoragePermission() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            return Environment.isExternalStorageManager();
-        }
-        return checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED;
-    }
-
-    /** 仅在用户点击"查看日志"且无权限时弹出，不再打开 App 就弹 */
-    private void showStoragePermissionDialog() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            // Android 11+：跳"所有文件访问"设置页
-            new AlertDialog.Builder(this)
-                    .setTitle("需要存储权限")
-                    .setMessage("查看日志需要访问 /sdcard/fytMusicVoiceInject/logs，请在授权页打开“允许访问所有文件”后返回。\n（注入功能本身不依赖该权限）")
-                    .setPositiveButton("去授权", (d, w) -> {
-                        try {
-                            Intent intent = new Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                            intent.setData(android.net.Uri.parse("package:" + getPackageName()));
-                            startActivity(intent);
-                        } catch (Throwable t1) {
-                            try {
-                                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-                            } catch (Throwable t2) {
-                                Toast.makeText(this, "车机系统不支持所有文件访问设置，请手动在系统设置中授权存储权限",
-                                        Toast.LENGTH_LONG).show();
-                            }
-                        }
-                    })
-                    .setNegativeButton("取消", null)
-                    .show();
-        } else {
-            // Android 10 及以下：直接申请运行时权限，不跳设置页（避免车机无对应设置页导致闪退）
-            requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE}, 1001);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1001) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                loadLog();
-            } else {
-                Toast.makeText(this, "存储权限被拒绝，无法查看日志", Toast.LENGTH_SHORT).show();
-            }
-        }
-    }
-
     // ------------------------------------------------------------------
     // 更新逻辑
     // ------------------------------------------------------------------
@@ -332,181 +275,19 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
-    // 日志
+    // 日志查看 / 清空 / 导出（业务在 LogCollector）
     // ------------------------------------------------------------------
-
-    /**
-     * 全部作用域（宿主）包名 + 模块自身兜底。
-     *
-     * v1.6.0 修正：各进程的 LogManager 写的是【宿主自己】的外部私有目录
-     * （/sdcard/Android/data/<宿主pkg>/files/logs/），不是模块目录——
-     * 旧列表用 com.syu.voice.hook 当"车助理进程"是错的，且漏了 TXZ（com.txznet.txz）。
-     * getExternalFilesDir 失败时日志还会 fallback 到宿主内部私有目录 /data/data/<宿主pkg>/files/logs/。
-     */
-    private static final String[] SCOPE_PKGS = {
-            "com.syu.voice",                 // 车助理（语音助手）
-            "com.txznet.txz",               // TXZ 语音主服务
-            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad
-            "com.tencent.qqmusiccar",        // QQ音乐 车机版
-            "com.tencent.qqmusic",           // QQ音乐 手机版
-            "com.netease.cloudmusic.iot",    // 网易云 车机版
-            "com.netease.cloudmusic",        // 网易云 手机版
-            "com.syu.voice.hook",            // 模块自身（旧版/兜底目录）
-    };
-
-    private static final String LOG_NAME = "fytMusicVoiceInject.log";
-    /** 轮转备份后缀（LogManager 1MB 轮转，保留 .1/.2/.3） */
-    private static final String[] LOG_SUFFIXES = {"", ".1", ".2", ".3"};
-
-    private Boolean mRootCache;
-
-    /** 是否有可用 root（结果缓存；首次探测在后台线程做，避免 Magisk 弹窗卡主线程） */
-    private boolean hasRoot() {
-        if (mRootCache == null) {
-            try {
-                mRootCache = new String(suRun("id"), "UTF-8").contains("uid=0");
-            } catch (Throwable t) {
-                mRootCache = false;
-            }
-        }
-        return mRootCache;
-    }
-
-    /** 执行 su 命令并返回 stdout（先读完输出再 waitFor，防大输出撑爆管道死锁） */
-    private static byte[] suRun(String cmd) throws Exception {
-        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
-        byte[] out = readAll(p.getInputStream());
-        byte[] err = readAll(p.getErrorStream());
-        int code = p.waitFor();
-        if (code != 0) {
-            throw new RuntimeException("su exit=" + code
-                    + (err.length > 0 ? " err=" + new String(err, "UTF-8").trim() : ""));
-        }
-        return out;
-    }
-
-    private static byte[] readAll(InputStream in) throws Exception {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) {
-            bos.write(buf, 0, n);
-        }
-        in.close();
-        return bos.toByteArray();
-    }
-
-    /** 某包的候选日志路径：sdcard 外部私有目录 + /data/media（root 绕过 FUSE）+ /data/data 内部私有目录（fallback） */
-    private static List<File> logFileCandidates(String pkg, String suffix) {
-        List<File> files = new ArrayList<File>();
-        String name = LOG_NAME + suffix;
-        files.add(new File("/sdcard/Android/data/" + pkg + "/files/logs/" + name));
-        // root 走 /data/media/0 绕过 FUSE（部分 ROM 下 root 通过 /sdcard FUSE 访问 Android/data 仍被拒）
-        files.add(new File("/data/media/0/Android/data/" + pkg + "/files/logs/" + name));
-        files.add(new File("/data/data/" + pkg + "/files/logs/" + name));
-        // LogManager 旧版/异常兜底可能直接落在内部 files 根目录（无 logs 子目录）
-        files.add(new File("/data/data/" + pkg + "/files/" + name));
-        return files;
-    }
-
-    /**
-     * 读取一个日志文件：先直读（自己能读的），失败且 root 可用时走 su cat。
-     * Android 10+ 分区存储下，模块（普通 uid）读不了 QQ音乐HD 等其他 App 的
-     * 外部私有目录——这正是旧版"看不到 QQ音乐HD 日志"的根因，root 直读绕开限制。
-     *
-     * @return 文件内容；文件不存在/读取失败返回 null
-     */
-    private byte[] readLogBestEffort(String pkg, String suffix) {
-        // 直读（自己目录或 ROM 放开的场景）
-        for (File f : logFileCandidates(pkg, suffix)) {
-            if (f.exists() && f.isFile() && f.canRead()) {
-                try {
-                    byte[] data = readAll(new FileInputStream(f));
-                    if (data.length > 0) {
-                        return data;
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        // root 兜底：cat 逐个候选路径，读到内容即返回
-        if (mRootCache == null || mRootCache) {
-            for (File f : logFileCandidates(pkg, suffix)) {
-                try {
-                    byte[] data = suRun("cat " + f.getAbsolutePath());
-                    if (data.length > 0) {
-                        return data;
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * v1.8.1：从某进程日志内容解析"模块加载"记录里的版本号。
-     * v1.8.3：取最后一条匹配（最新加载的版本），而非第一条——日志文件跨天累积，
-     * 第一条可能是几天前的旧版本。
-     * 车助理: "模块加载，进程: ...，版本: 1.8.2"；QQ/TXZ: "模块加载（…进程）v1.8.2 ..."。
-     * @return 版本号字符串（如 1.8.2）；无加载记录返回 null
-     */
-    private static String parseLoadedVersion(byte[] data) {
-        if (data == null || data.length == 0) {
-            return null;
-        }
-        try {
-            String text = new String(data, "UTF-8");
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                    "模块加载[^\\n]*?(?:版本[: ]+|v)([0-9]+\\.[0-9]+\\.[0-9]+)")
-                    .matcher(text);
-            String last = null;
-            while (m.find()) {
-                last = m.group(1);
-            }
-            return last;
-        } catch (Throwable ignored) {
-        }
-        return null;
-    }
 
     private void loadLog() {
         mLogView.setText("正在读取日志…（含作用域进程，首次可能弹出 root 授权）");
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final StringBuilder sb = new StringBuilder();
-                boolean any = false;
-                final List<String> empty = new ArrayList<String>();
-                for (String pkg : SCOPE_PKGS) {
-                    byte[] data = readLogBestEffort(pkg, "");
-                    if (data == null) {
-                        empty.add(pkg);
-                        continue;
-                    }
-                    String ver = parseLoadedVersion(data);
-                    sb.append("===== ").append(pkg)
-                            .append(ver != null ? "（模块 v" + ver + " 已加载）" : "（未检测到模块加载记录）")
-                            .append(" =====\n");
-                    try {
-                        sb.append(new String(data, "UTF-8")).append('\n');
-                    } catch (Throwable t) {
-                        sb.append("(解码失败: ").append(t.getMessage()).append(")\n");
-                    }
-                    any = true;
-                }
-                if (!any) {
-                    sb.append("（暂无日志。请先重启车机让模块生效，或触发一次语音指令）");
-                } else if (!empty.isEmpty()) {
-                    sb.append("\n[提示] 无日志文件的进程: ").append(TextUtils.join(", ", empty))
-                            .append("\n（未安装/未注入或尚未产生日志）")
-                            .append("\n★ 若 QQ音乐HD / TXZ 在此列：打开 LSPosed -> 模块 -> fytMusicVoiceInject，")
-                            .append("确认勾选了该应用，并强制停止它（或重启车机）后再测。");
-                }
+                final String text = mCollector.buildLogViewText();
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        mLogView.setText(sb.toString());
+                        mLogView.setText(text);
                     }
                 });
             }
@@ -514,78 +295,49 @@ public class MainActivity extends Activity {
     }
 
     private void clearLog() {
-        int cleared = 0;
-        boolean root = hasRoot();
-        for (String pkg : SCOPE_PKGS) {
-            for (String suffix : LOG_SUFFIXES) {
-                for (File f : logFileCandidates(pkg, suffix)) {
-                    if (!f.exists()) {
-                        continue;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final int cleared = mCollector.clearLogs();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this,
+                                "已清空 " + cleared + " 个日志文件", Toast.LENGTH_SHORT).show();
+                        mLogView.setText("");
                     }
-                    if (f.delete()) {
-                        cleared++;
-                    } else if (root) {
-                        // 分区存储下删不了其他 App 目录的文件，root 删
-                        try {
-                            suRun("rm -f " + f.getAbsolutePath());
-                            cleared++;
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                }
+                });
             }
-        }
-        Toast.makeText(this, "已清空 " + cleared + " 个日志文件", Toast.LENGTH_SHORT).show();
-        mLogView.setText("");
-    }
-
-    // ------------------------------------------------------------------
-    // 一键导出完整日志（v1.6.0；v1.6.1 结果三态化——失败/残缺明确可识别）
-    // ------------------------------------------------------------------
-
-    /** 导出结果：成功 / 不完整（缺 root 或作用域日志）/ 失败 三态 */
-    private static final class ExportResult {
-        File zipFile;            // 最终发布的 zip；null=彻底失败
-        boolean rootOk;          // 是否拿到 root
-        String rootError;        // root 失败原因（可空）
-        final List<String> foundPkgs = new ArrayList<String>(); // 读到日志的包名
-        boolean logcatOk;        // logcat 是否入包
-        String fatalError;       // 致命错误（zip 未生成/一个进程日志都没有）
+        }).start();
     }
 
     /**
-     * 导出模块 + 全部作用域进程的完整日志：
-     *   <pkg>/fytMusicVoiceInject.log[.1~.3]  各进程文件日志（直读 + root 兜底）
-     *   logcat/logcat_filtered.txt            logcat 关键行（fytMusic/Xposed/AndroidRuntime）
-     *   logcat/logcat_recent.txt              logcat 最近 30 万行（root 时，车机日志量大，覆盖足够时间窗）
-     *   info.txt                              版本/环境/各进程文件清单
-     * 有 root：zip 落 /sdcard/Download/（su cp + chmod）；
-     * 无 root：zip 落模块自己外部目录，且结果对话框明确警告"导出不完整"。
+     * 导出模块 + 全部作用域进程的完整日志。
+     * 每次导出重新探测 root（用户可能上次拒绝、刚去 Magisk 完成授权）。
      */
     private void exportLogs() {
-        // 每次导出重新探测 root（用户可能上次拒绝、刚去 Magisk 完成授权）
-        mRootCache = null;
+        mShell.invalidate();
         Toast.makeText(this, "正在导出…首次使用会弹出 Magisk 授权，请点「允许」",
                 Toast.LENGTH_LONG).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final ExportResult r;
+                final LogCollector.ExportResult r;
                 try {
-                    r = doExportLogs();
+                    r = mCollector.exportZip();
                 } catch (Throwable t) {
-                    ExportResult e = new ExportResult();
+                    LogCollector.ExportResult e = new LogCollector.ExportResult();
                     e.fatalError = t.getClass().getSimpleName() + ": "
                             + (t.getMessage() == null ? t.toString() : t.getMessage());
-                    showResultOnUi(e);
+                    showExportResultOnUi(e);
                     return;
                 }
-                showResultOnUi(r);
+                showExportResultOnUi(r);
             }
         }).start();
     }
 
-    private void showResultOnUi(final ExportResult r) {
+    private void showExportResultOnUi(final LogCollector.ExportResult r) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -594,203 +346,15 @@ public class MainActivity extends Activity {
         });
     }
 
-    private ExportResult doExportLogs() {
-        ExportResult r = new ExportResult();
-
-        // 1) root 探测（触发 Magisk 授权弹窗；后台线程阻塞等待用户响应，不卡 UI）
-        try {
-            byte[] id = suRun("id");
-            r.rootOk = new String(id, "UTF-8").contains("uid=0");
-            if (!r.rootOk) {
-                r.rootError = "su id 未返回 uid=0";
-            }
-        } catch (Throwable t) {
-            r.rootOk = false;
-            r.rootError = t.getMessage() == null ? t.toString() : t.getMessage();
-        }
-        mRootCache = r.rootOk; // readLogBestEffort 据此决定是否走 root 兜底
-
-        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        String zipName = "fytMusicVoiceInject_logs_" + stamp + ".zip";
-
-        File cacheDir = new File(getCacheDir(), "export");
-        if (!cacheDir.exists()) {
-            cacheDir.mkdirs();
-        }
-        File tmpZip = new File(cacheDir, zipName);
-
-        List<String> info = new ArrayList<String>();
-        info.add("模块版本: v" + BuildConfig.VERSION_NAME + " (code " + BuildConfig.VERSION_CODE + ")");
-        info.add("导出时间: " + stamp);
-        info.add("Android: " + Build.VERSION.RELEASE + " (SDK " + Build.VERSION.SDK_INT + ")");
-        info.add("Root: " + (r.rootOk ? "是" : "否（" + r.rootError + "）"));
-        info.add("");
-        info.add("各进程日志文件:");
-
-        try {
-            ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tmpZip));
-            try {
-                // 2) 各作用域进程的文件日志（主文件 + 轮转 .1/.2/.3）
-                for (String pkg : SCOPE_PKGS) {
-                    StringBuilder pkgLine = new StringBuilder("  ").append(pkg).append(':');
-                    boolean hasAny = false;
-                    String loadedVer = null;
-                    for (String suffix : LOG_SUFFIXES) {
-                        byte[] data = readLogBestEffort(pkg, suffix);
-                        if (data == null) {
-                            continue;
-                        }
-                        putZipEntry(zos, pkg + "/" + LOG_NAME + suffix, data);
-                        pkgLine.append(" ").append(LOG_NAME + suffix)
-                                .append("(").append(data.length).append("B)");
-                        hasAny = true;
-                        if ("".equals(suffix)) {
-                            loadedVer = parseLoadedVersion(data);
-                        }
-                    }
-                    if (hasAny) {
-                        r.foundPkgs.add(pkg);
-                        pkgLine.append(loadedVer != null
-                                ? " | 模块 v" + loadedVer + " 已加载"
-                                : " | 有日志但无模块加载记录（旧版本？）");
-                    } else {
-                        pkgLine.append(" 未找到（未安装/未注入/未产生日志或无 root 读不到）");
-                    }
-                    info.add(pkgLine.toString());
-                }
-
-                // 3) logcat
-                byte[] logcatAll = null;
-                if (r.rootOk) {
-                    try {
-                        logcatAll = suRun("logcat -d -t 300000");
-                    } catch (Throwable t) {
-                        info.add("logcat root 读取失败: " + t.getMessage());
-                    }
-                }
-                if (logcatAll == null) {
-                    // 无 root：尝试直读（部分车机 ROM 放开 logcat 权限），只取模块 tag
-                    try {
-                        Process p = Runtime.getRuntime().exec(
-                                new String[]{"logcat", "-d", "-t", "3000", "-s", "fytMusicVoice"});
-                        logcatAll = readAll(p.getInputStream());
-                        p.waitFor();
-                    } catch (Throwable t) {
-                        info.add("logcat 直读失败: " + t.getMessage());
-                    }
-                }
-                r.logcatOk = logcatAll != null && logcatAll.length > 0;
-                if (r.logcatOk) {
-                    putZipEntry(zos, "logcat/logcat_recent.txt", logcatAll);
-                    putZipEntry(zos, "logcat/logcat_filtered.txt", filterLines(logcatAll));
-                    // v1.8.5：LSPosed 框架日志（模块注入/加载记录）
-                    byte[] lsposedLogcat = filterLogcatTags(logcatAll,
-                            new String[]{"LSPosed", "LSPosed-Bridge", "LSPosedManager",
-                                    "Xposed", "XSharedPreferences"});
-                    if (lsposedLogcat != null && lsposedLogcat.length > 0) {
-                        putZipEntry(zos, "logcat/logcat_lsposed.txt", lsposedLogcat);
-                    }
-                } else {
-                    info.add("logcat 不可读（无 root 且 ROM 限制）");
-                }
-
-                // v1.8.5：4) LSPosed 框架日志文件（/data/adb/lspd/log/ 等）
-                info.add("");
-                info.add("LSPosed 框架日志:");
-                int lsposedFileCount = 0;
-                String[] lsposedLogDirs = {
-                        "/data/adb/lspd/log/",
-                        "/data/misc/lspd/log/",
-                        "/data/adb/lspd/",
-                };
-                if (r.rootOk) {
-                    for (String dir : lsposedLogDirs) {
-                        try {
-                            byte[] ls = suRun("ls -1 " + dir + " 2>/dev/null");
-                            String files = new String(ls, "UTF-8").trim();
-                            if (files.isEmpty()) {
-                                continue;
-                            }
-                            for (String fn : files.split("\n")) {
-                                fn = fn.trim();
-                                if (fn.isEmpty()) {
-                                    continue;
-                                }
-                                // 只取日志文件，排除子目录
-                                try {
-                                    byte[] fdata = suRun("cat " + dir + fn);
-                                    if (fdata != null && fdata.length > 0) {
-                                        // 目录名映射到 zip 内路径
-                                        String zipDir = "lsposed";
-                                        putZipEntry(zos, zipDir + "/" + fn, fdata);
-                                        info.add("  " + dir + fn + " (" + fdata.length + "B)");
-                                        lsposedFileCount++;
-                                    }
-                                } catch (Throwable ignored) {
-                                }
-                            }
-                        } catch (Throwable ignored) {
-                        }
-                    }
-                }
-                if (lsposedFileCount == 0) {
-                    info.add("  未找到 LSPosed 日志文件（无 root 或路径不同）");
-                }
-
-                // 5) info.txt
-                putZipEntry(zos, "info.txt",
-                        TextUtils.join("\n", info).getBytes("UTF-8"));
-            } finally {
-                zos.close();
-            }
-        } catch (Throwable t) {
-            r.fatalError = "写 zip 失败: " + t.getMessage();
-            tmpZip.delete();
-            return r;
-        }
-
-        // 5) 一个进程日志都没拿到 = 失败（zip 里只有 info.txt，无诊断价值）
-        if (r.foundPkgs.isEmpty()) {
-            tmpZip.delete();
-            r.fatalError = "没有收集到任何进程的日志。"
-                    + (r.rootOk ? "" : "主因：未获取 root 权限，读不到其他 App 的日志目录。");
-            return r;
-        }
-
-        // 6) 发布 zip：有 root 由 su cp 到 /sdcard/Download/；否则落模块自己外部目录
-        if (r.rootOk) {
-            try {
-                String dst = "/sdcard/Download/" + zipName;
-                suRun("cp " + tmpZip.getAbsolutePath() + " " + dst + " && chmod 644 " + dst);
-                File out = new File(dst);
-                if (out.exists() && out.length() > 0) {
-                    r.zipFile = out;
-                }
-            } catch (Throwable t) {
-                r.rootError = "发布到 Download 失败: " + t.getMessage();
-            }
-        }
-        if (r.zipFile == null) {
-            try {
-                File fallback = new File(getExternalFilesDir(null), zipName);
-                copyFile(tmpZip, fallback);
-                r.zipFile = fallback;
-            } catch (Throwable t) {
-                r.fatalError = "zip 发布失败: " + t.getMessage();
-            }
-        }
-        return r;
-    }
-
     /**
      * 结果对话框（v1.6.1）：必须点「确定」关闭，不会像 Toast 一闪而过。
      * 三态：✅ 成功 / ⚠️ 导出不完整（缺 root 或作用域日志）/ ❌ 失败，均给出可操作建议。
      */
-    private void showExportResult(ExportResult r) {
+    private void showExportResult(LogCollector.ExportResult r) {
         boolean failed = r.zipFile == null || r.fatalError != null;
         boolean hasScopeLog = false;
         for (String pkg : r.foundPkgs) {
-            if (!"com.syu.voice.hook".equals(pkg)) {
+            if (!ScopeConfig.MODULE_PKG.equals(pkg)) {
                 hasScopeLog = true; // 7 个作用域宿主包任一拿到日志
                 break;
             }
@@ -836,66 +400,6 @@ public class MainActivity extends Activity {
                                      : (r.fatalError == null ? "" : r.fatalError)));
     }
 
-    private static void putZipEntry(ZipOutputStream zos, String name, byte[] data) throws Exception {
-        zos.putNextEntry(new ZipEntry(name));
-        zos.write(data);
-        zos.closeEntry();
-    }
-
-    /** 从 logcat 字节流中过滤模块相关行（fytMusic / Xposed / LSPosed / AndroidRuntime，忽略大小写） */
-    private static byte[] filterLines(byte[] logcat) {
-        try {
-            String[] lines = new String(logcat, "UTF-8").split("\n");
-            StringBuilder sb = new StringBuilder();
-            for (String line : lines) {
-                String lower = line.toLowerCase(Locale.US);
-                if (lower.contains("fytmusic") || lower.contains("xposed")
-                        || lower.contains("lsposed") || lower.contains("androidruntime")) {
-                    sb.append(line).append('\n');
-                }
-            }
-            return sb.toString().getBytes("UTF-8");
-        } catch (Throwable t) {
-            return new byte[0];
-        }
-    }
-
-    /**
-     * v1.8.5：按 logcat 标签精确过滤。Android logcat 格式为
-     * "MM-DD HH:mm:ss.sss  PID  TID LEVEL TAG: msg"，标签在级别后、冒号前。
-     * 匹配 " TAG:" 前缀，避免误伤消息正文。
-     */
-    private static byte[] filterLogcatTags(byte[] logcat, String[] tags) {
-        try {
-            String[] lines = new String(logcat, "UTF-8").split("\n");
-            StringBuilder sb = new StringBuilder();
-            for (String line : lines) {
-                for (String tag : tags) {
-                    // 匹配 " TAG:"（空格+标签+冒号），兼容 brief/threadtime 格式
-                    if (line.contains(" " + tag + ":")) {
-                        sb.append(line).append('\n');
-                        break;
-                    }
-                }
-            }
-            return sb.toString().getBytes("UTF-8");
-        } catch (Throwable t) {
-            return new byte[0];
-        }
-    }
-
-    private static void copyFile(File src, File dst) throws Exception {
-        InputStream in = new FileInputStream(src);
-        OutputStream out = new FileOutputStream(dst);
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) {
-            out.write(buf, 0, n);
-        }
-        in.close();
-        out.close();
-    }
-
     // ------------------------------------------------------------------
     // 重启车机
     // ------------------------------------------------------------------
@@ -904,40 +408,30 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("确认重启车机")
                 .setMessage("重启后 LSPosed 模块会生效。\n\n需要 root 权限，首次使用请在 Magisk 中允许本应用获取 root。")
-                .setPositiveButton("立即重启", (d, w) -> rebootDevice())
+                .setPositiveButton("立即重启", (d, w) -> {
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!mShell.reboot()) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        Toast.makeText(MainActivity.this,
+                                                "重启失败：未获取 root 权限。\n请在 Magisk 中允许本应用获取 root。",
+                                                Toast.LENGTH_LONG).show();
+                                    }
+                                });
+                            }
+                        }
+                    }).start();
+                })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    private void rebootDevice() {
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "reboot"});
-            p.waitFor();
-            // 极少数设备 reboot 不生效，fallback 到 svc power reboot
-            try {
-                Runtime.getRuntime().exec(new String[]{"su", "-c", "svc power reboot"});
-            } catch (Throwable ignored) {
-            }
-        } catch (Throwable t) {
-            Toast.makeText(this, "重启失败：未获取 root 权限。\n请在 Magisk 中允许本应用获取 root。",
-                    Toast.LENGTH_LONG).show();
-        }
-    }
-
     // ------------------------------------------------------------------
-    // 强制停止作用域应用（让所有宿主进程重新加载最新模块代码）
+    // 一键勾选作用域并重启应用（LsposedScopeManager + AppControl）
     // ------------------------------------------------------------------
-
-    /** 需要停止的作用域宿主包（排除模块自身 com.syu.voice.hook） */
-    private static final String[] FORCE_STOP_PKGS = {
-            "com.syu.voice",                 // 车助理（语音助手，系统应用会自动重启）
-            "com.txznet.txz",               // TXZ 语音主服务
-            "com.tencent.qqmusicpad",        // QQ音乐 HD / Pad
-            "com.tencent.qqmusiccar",        // QQ音乐 车机版
-            "com.tencent.qqmusic",           // QQ音乐 手机版
-            "com.netease.cloudmusic.iot",    // 网易云 车机版
-            "com.netease.cloudmusic",        // 网易云 手机版
-    };
 
     private void confirmAutoScopeAndRestart() {
         new AlertDialog.Builder(this)
@@ -960,20 +454,19 @@ public class MainActivity extends Activity {
                         .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
                                 .format(new Date()))
                         .append(" =====\n");
-                if (!hasRoot()) {
+                if (!mShell.hasRoot()) {
                     sb.append("❌ 无 Root 权限\n");
-                    final String r = sb.toString();
-                    runOnUiThread(() -> mLogView.setText(r));
+                    setLogText(sb.toString());
                     return;
                 }
 
                 // 1. 配置 LSPosed 作用域
-                boolean scopeOk = ensureLsposedScope(sb);
+                boolean scopeOk = mScopeMgr.ensureScope(sb);
 
                 // 2. 强制停止所有目标应用（无论 scope 配置是否成功都执行，
                 //    让已勾选的应用重新加载模块；未勾选的重启后也不注入）
                 sb.append("\n----- 强制停止目标应用 -----\n");
-                forceStopScopeAppsInternal(sb);
+                mAppControl.forceStopInstalledTargets(sb);
 
                 if (scopeOk) {
                     sb.append("\n✅ 作用域已配置并重启应用。下次语音指令时各应用会加载最新模块代码。\n");
@@ -981,413 +474,24 @@ public class MainActivity extends Activity {
                     sb.append("\n⚠️ 作用域配置未完全成功，已重启应用。请点「检测作用域」确认勾选状态。\n");
                 }
 
+                final boolean ok = scopeOk;
                 LogManager.i(TAG, "一键勾选作用域并重启结果:\n" + sb.toString());
                 final String result = sb.toString();
-                runOnUiThread(() -> {
-                    mLogView.setText(result);
-                    Toast.makeText(MainActivity.this, scopeOk ? "作用域已配置并重启应用"
-                            : "作用域配置部分失败，请查看日志", Toast.LENGTH_LONG).show();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        mLogView.setText(result);
+                        Toast.makeText(MainActivity.this, ok ? "作用域已配置并重启应用"
+                                : "作用域配置部分失败，请查看日志", Toast.LENGTH_LONG).show();
+                    }
                 });
             }
         }).start();
     }
 
-    /**
-     * 配置 LSPosed 作用域：把已安装的目标包全部加入模块 scope，enabled=1。
-     * v1.8.6：重写。旧版假设 modules 表有 mid(文本)/scope(JSON)/enabled 三列，
-     * 但 LSPosed 1.9.x 实际 schema 是
-     *   modules(mid INTEGER PK AUTOINCREMENT, module_pkg_name TEXT, apk_path TEXT, enabled INTEGER)
-     *   scope(mid INTEGER, app_pkg_name TEXT, user_id INTEGER)
-     * 且 su cp 出来的文件属主是 root、chmod 644 对应用 uid 只读 → OPEN_READWRITE 失败。
-     * 现在改为：打开后先自省表结构，按真实 schema 读写；缓存文件 chmod 666；
-     * 写回时 cp 覆盖原文件（inode/属主/SELinux 上下文均保留）。
-     *
-     * @param sb 日志追加
-     * @return true=配置成功，false=失败
-     */
-    private boolean ensureLsposedScope(StringBuilder sb) {
-        String dbPath = locateLsposedDb(sb);
-        if (dbPath == null) {
-            return false;
-        }
-
-        // 收集已安装的目标包
-        java.util.LinkedHashSet<String> targetPkgs = new java.util.LinkedHashSet<>();
-        for (String pkg : FORCE_STOP_PKGS) {
-            try {
-                getPackageManager().getPackageInfo(pkg, 0);
-                targetPkgs.add(pkg);
-            } catch (Throwable ignored) {
-            }
-        }
-        if (targetPkgs.isEmpty()) {
-            sb.append("❌ 没有已安装的目标应用\n");
-            return false;
-        }
-
-        // 备份 + 拷贝（含 -wal/-shm）到缓存目录，chmod 666 让本应用可读写
-        String cachedDb = new File(getCacheDir(), "lspd_modules_write.db").getAbsolutePath();
-        String backupDb = new File(getCacheDir(), "lspd_modules_backup.db").getAbsolutePath();
-        try {
-            suRun("cp " + dbPath + " " + backupDb + "; true");
-            suRun("cp " + dbPath + " " + cachedDb + "; "
-                    + "cp " + dbPath + "-wal " + cachedDb + "-wal 2>/dev/null; "
-                    + "cp " + dbPath + "-shm " + cachedDb + "-shm 2>/dev/null; "
-                    + "chmod 666 " + cachedDb + " " + cachedDb + "-wal "
-                    + cachedDb + "-shm 2>/dev/null; true");
-        } catch (Throwable t) {
-            sb.append("❌ 拷贝数据库失败: ").append(t.getMessage()).append("\n");
-            return false;
-        }
-
-        boolean ok = false;
-        SQLiteDatabase db = null;
-        try {
-            db = SQLiteDatabase.openDatabase(cachedDb, null, SQLiteDatabase.OPEN_READWRITE);
-
-            java.util.LinkedHashSet<String> tableSet = new java.util.LinkedHashSet<>();
-            android.database.Cursor tc = db.rawQuery(
-                    "SELECT name FROM sqlite_master WHERE type='table'", null);
-            while (tc.moveToNext()) {
-                tableSet.add(tc.getString(0));
-            }
-            tc.close();
-            java.util.Set<String> modulesCols = tableColumns(db, "modules");
-            java.util.Set<String> scopeCols = tableColumns(db, "scope");
-
-            if (tableSet.contains("modules") && modulesCols.contains("module_pkg_name")) {
-                // ===== 标准 LSPosed schema：modules + scope 两张表 =====
-                sb.append("schema: modules+scope 标准结构（module_pkg_name）\n");
-                // 1) 找/建模块行
-                int mid = -1;
-                int enabled = -1;
-                android.database.Cursor c = db.rawQuery(
-                        "SELECT mid, enabled FROM modules WHERE module_pkg_name=?",
-                        new String[]{MODULE_PKG});
-                if (c.moveToFirst()) {
-                    mid = c.getInt(0);
-                    enabled = c.getInt(1);
-                }
-                c.close();
-                if (mid < 0) {
-                    String apkPath;
-                    try {
-                        apkPath = getPackageManager()
-                                .getApplicationInfo(MODULE_PKG, 0).sourceDir;
-                    } catch (Throwable t) {
-                        apkPath = "";
-                    }
-                    if (modulesCols.contains("apk_path")) {
-                        db.execSQL("INSERT INTO modules (module_pkg_name, apk_path, enabled)"
-                                + " VALUES (?, ?, 1)", new Object[]{MODULE_PKG, apkPath});
-                    } else {
-                        db.execSQL("INSERT INTO modules (module_pkg_name, enabled)"
-                                + " VALUES (?, 1)", new Object[]{MODULE_PKG});
-                    }
-                    sb.append("  modules 表无本模块记录，已新建（mid 自动分配）\n");
-                    c = db.rawQuery("SELECT mid FROM modules WHERE module_pkg_name=?",
-                            new String[]{MODULE_PKG});
-                    if (c.moveToFirst()) {
-                        mid = c.getInt(0);
-                    }
-                    c.close();
-                } else if (enabled != 1) {
-                    db.execSQL("UPDATE modules SET enabled=1 WHERE mid=?",
-                            new Object[]{mid});
-                    sb.append("  模块原 enabled=").append(enabled).append("，已置 1\n");
-                }
-                if (mid < 0) {
-                    sb.append("❌ 无法获取/创建模块 mid，终止\n");
-                    return false;
-                }
-                // 2) 合并 scope 行
-                java.util.LinkedHashSet<String> existing = new java.util.LinkedHashSet<>();
-                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
-                        new String[]{String.valueOf(mid)});
-                while (c.moveToNext()) {
-                    existing.add(c.getString(0));
-                }
-                c.close();
-                java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
-                boolean hasUser = scopeCols.contains("user_id");
-                for (String pkg : targetPkgs) {
-                    if (!existing.contains(pkg)) {
-                        if (hasUser) {
-                            db.execSQL("INSERT OR IGNORE INTO scope (mid, app_pkg_name, user_id)"
-                                    + " VALUES (?, ?, 0)", new Object[]{mid, pkg});
-                        } else {
-                            db.execSQL("INSERT OR IGNORE INTO scope (mid, app_pkg_name)"
-                                    + " VALUES (?, ?)", new Object[]{mid, pkg});
-                        }
-                        added.add(pkg);
-                    }
-                }
-                // 3) 回读确认
-                java.util.LinkedHashSet<String> finalScope = new java.util.LinkedHashSet<>();
-                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
-                        new String[]{String.valueOf(mid)});
-                while (c.moveToNext()) {
-                    finalScope.add(c.getString(0));
-                }
-                c.close();
-                ok = true;
-                sb.append("✅ 作用域已配置，当前共 ").append(finalScope.size()).append(" 个包：\n");
-                sb.append("  ").append(TextUtils.join(", ", finalScope)).append("\n");
-                if (!added.isEmpty()) {
-                    sb.append("  本次新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
-                }
-            } else if (tableSet.contains("modules") && modulesCols.contains("scope")) {
-                // ===== 旧 JSON schema 兜底（modules.mid 文本 + scope JSON 列）=====
-                sb.append("schema: modules.scope JSON 结构\n");
-                String currentScope = null;
-                android.database.Cursor c = db.rawQuery(
-                        "SELECT scope FROM modules WHERE mid=?", new String[]{MODULE_PKG});
-                if (c.moveToFirst()) {
-                    currentScope = c.getString(0);
-                }
-                c.close();
-                java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>();
-                if (currentScope != null && !currentScope.isEmpty()) {
-                    try {
-                        JSONArray arr = new JSONArray(currentScope);
-                        for (int i = 0; i < arr.length(); i++) {
-                            merged.add(arr.getString(i));
-                        }
-                    } catch (JSONException e) {
-                        sb.append("⚠️ 旧 scope JSON 解析失败，将覆盖: ").append(currentScope).append("\n");
-                    }
-                }
-                java.util.LinkedHashSet<String> added = new java.util.LinkedHashSet<>();
-                for (String pkg : targetPkgs) {
-                    if (!merged.contains(pkg)) {
-                        merged.add(pkg);
-                        added.add(pkg);
-                    }
-                }
-                JSONArray newScope = new JSONArray();
-                for (String pkg : merged) {
-                    newScope.put(pkg);
-                }
-                String newScopeStr = newScope.toString();
-                int rows = db.update("modules", createScopeValues(newScopeStr),
-                        "mid=?", new String[]{MODULE_PKG});
-                if (rows == 0) {
-                    db.execSQL("INSERT INTO modules (mid, enabled, scope) VALUES (?, 1, ?)",
-                            new Object[]{MODULE_PKG, newScopeStr});
-                }
-                ok = true;
-                sb.append("✅ 作用域已配置（共 ").append(merged.size()).append(" 个包）\n");
-                if (!added.isEmpty()) {
-                    sb.append("  新增勾选: ").append(TextUtils.join(", ", added)).append("\n");
-                }
-            } else {
-                sb.append("❌ 无法识别的数据库 schema，表: ").append(tableSet).append("\n");
-                sb.append("  modules 列: ").append(modulesCols).append("\n");
-                sb.append("  scope 列: ").append(scopeCols).append("\n");
-                sb.append("请把本段日志反馈，按实际 schema 适配。\n");
-                return false;
-            }
-            try {
-                db.execSQL("PRAGMA wal_checkpoint(TRUNCATE)");
-            } catch (Throwable ignored) {
-            }
-        } catch (Throwable t) {
-            sb.append("❌ 操作数据库失败: ").append(t.getMessage()).append("\n");
-        } finally {
-            if (db != null) {
-                try { db.close(); } catch (Throwable ignored) {}
-            }
-        }
-        if (!ok) {
-            return false;
-        }
-
-        // 写回原路径：cp 覆盖已存在文件，inode/属主/权限/SELinux 上下文保持原样；
-        // 清掉残留 -wal/-shm；restorecon 兜底修正上下文（失败可忽略）。
-        try {
-            suRun("cp " + cachedDb + " " + dbPath + "; "
-                    + "rm -f " + dbPath + "-wal " + dbPath + "-shm; "
-                    + "restorecon -F " + dbPath + " 2>/dev/null; true");
-        } catch (Throwable t) {
-            sb.append("⚠️ 写回数据库失败: ").append(t.getMessage()).append("\n");
-            return false;
-        }
-        new File(cachedDb).delete();
-        new File(cachedDb + "-wal").delete();
-        new File(cachedDb + "-shm").delete();
-        sb.append("  已写回 ").append(dbPath).append("\n");
-        sb.append("  提示：LSPosed 守护进程可能缓存作用域，若重启应用后仍未注入，请重启车机。\n");
-        return true;
-    }
-
-    /** ContentValues 小工具（modules.scope JSON 兜底分支用） */
-    private static android.content.ContentValues createScopeValues(String scopeJson) {
-        android.content.ContentValues v = new android.content.ContentValues();
-        v.put("scope", scopeJson);
-        v.put("enabled", 1);
-        return v;
-    }
-
-    /** 定位 LSPosed 配置数据库，找不到返回 null（并写日志） */
-    private String locateLsposedDb(StringBuilder sb) {
-        for (String p : LSPD_DB_PATHS) {
-            try {
-                byte[] out = suRun("ls -l " + p + " 2>/dev/null");
-                if (new String(out, "UTF-8").trim().length() > 0) {
-                    sb.append("数据库: ").append(p).append("\n");
-                    return p;
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        sb.append("❌ 未找到 LSPosed 配置数据库（已尝试 ").append(LSPD_DB_PATHS.length)
-                .append(" 个常见路径）\n");
-        return null;
-    }
-
-    /** 自省表列名（PRAGMA table_info） */
-    private static java.util.Set<String> tableColumns(SQLiteDatabase db, String table) {
-        java.util.LinkedHashSet<String> cols = new java.util.LinkedHashSet<>();
-        try {
-            android.database.Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
-            int nameIdx = c.getColumnIndex("name");
-            while (c.moveToNext()) {
-                cols.add(c.getString(nameIdx));
-            }
-            c.close();
-        } catch (Throwable ignored) {
-        }
-        return cols;
-    }
-
-    /**
-     * 强制停止所有目标应用（v1.8.4 从原 doForceStopScope 抽出的内部方法，
-     * 供一键配置作用域后调用）。返回 ok/fail/skip 计数摘要。
-     */
-    private void forceStopScopeAppsInternal(StringBuilder sb) {
-        int ok = 0, fail = 0, skip = 0;
-        for (String pkg : FORCE_STOP_PKGS) {
-            boolean installed;
-            try {
-                getPackageManager().getPackageInfo(pkg, 0);
-                installed = true;
-            } catch (Throwable t) {
-                installed = false;
-            }
-            if (!installed) {
-                sb.append(pkg).append(": 未安装，跳过\n");
-                skip++;
-                continue;
-            }
-            String pidBefore = getPidOf(pkg);
-            String forceErr = null;
-            try {
-                suRun("am force-stop " + pkg);
-            } catch (Throwable t) {
-                forceErr = t.getMessage();
-            }
-            try { Thread.sleep(600); } catch (Throwable ignored) {}
-            String pidAfter = getPidOf(pkg);
-            boolean stopped = pidAfter.isEmpty();
-            sb.append(pkg).append(": ");
-            if (pidBefore.isEmpty()) {
-                sb.append("停止前=未运行");
-            } else {
-                sb.append("停止前 pid=").append(pidBefore);
-            }
-            sb.append(" → ");
-            if (stopped) {
-                sb.append("已停止 ✅");
-                ok++;
-            } else {
-                sb.append("仍在运行 pid=").append(pidAfter).append(" ⚠️");
-                if (!pidBefore.equals(pidAfter)) {
-                    ok++;
-                } else {
-                    fail++;
-                }
-            }
-            if (forceErr != null) {
-                sb.append(" | force-stop 异常: ").append(forceErr);
-                fail++;
-            }
-            sb.append("\n");
-        }
-        sb.append("小结：成功 ").append(ok).append("，失败 ").append(fail)
-                .append("，跳过未安装 ").append(skip).append("\n");
-    }
-
-    private void confirmForceStopScope() {
-        new AlertDialog.Builder(this)
-                .setTitle("强制停止作用域应用")
-                .setMessage("将强制停止所有作用域 App（车助理、TXZ语音、QQ音乐等），"
-                        + "使其重新加载最新模块代码。\n\n"
-                        + "语音和音乐播放会短暂中断；车助理/TXZ等系统服务会被系统自动拉起，"
-                        + "QQ音乐等普通应用需下次语音指令时由模块拉起。\n\n"
-                        + "需要 Root 权限。是否继续？")
-                .setPositiveButton("确定", (d, w) -> doForceStopScope())
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** @deprecated 保留兼容（已被 doAutoScopeAndRestart 取代） */
-    private void doForceStopScope() {
-        mLogView.setText("正在强制停止作用域应用…\n");
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                StringBuilder sb = new StringBuilder();
-                sb.append("===== 强制停止作用域应用 ")
-                        .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-                                .format(new Date()))
-                        .append(" =====\n");
-                if (!hasRoot()) {
-                    sb.append("❌ 无 Root 权限\n");
-                    final String r = sb.toString();
-                    runOnUiThread(() -> mLogView.setText(r));
-                    return;
-                }
-                forceStopScopeAppsInternal(sb);
-                LogManager.i(TAG, "强制停止作用域应用结果:\n" + sb.toString());
-                final String result = sb.toString();
-                runOnUiThread(() -> {
-                    mLogView.setText(result);
-                    Toast.makeText(MainActivity.this, "已强制停止作用域应用",
-                            Toast.LENGTH_LONG).show();
-                });
-            }
-        }).start();
-    }
-
-    /**
-     * 取某包的主进程 pid（root 下 pidof）。返回空串表示未运行。
-     * pidof 可能返回多个 pid（多进程 App），取第一个。
-     */
-    private String getPidOf(String pkg) {
-        try {
-            byte[] out = suRun("pidof " + pkg);
-            String s = new String(out, "UTF-8").trim();
-            if (s.isEmpty()) {
-                return "";
-            }
-            int sp = s.indexOf(' ');
-            return sp > 0 ? s.substring(0, sp) : s;
-        } catch (Throwable t) {
-            return "";
-        }
-    }
-
     // ------------------------------------------------------------------
-    // LSPosed 作用域检测（读取 LSPosed 配置数据库，列出各作用域勾选状态）
+    // LSPosed 作用域检测
     // ------------------------------------------------------------------
-
-    private static final String MODULE_PKG = "com.syu.voice.hook";
-    /** LSPosed 配置数据库可能的路径（不同版本/安装方式） */
-    private static final String[] LSPD_DB_PATHS = {
-            "/data/adb/lspd/config/modules_config.db",
-            "/data/adb/modules/zygisk_lsposed/config/modules_config.db",
-            "/data/adb/lspd/modules_config.db",
-    };
 
     private void checkLsposedScope() {
         mLogView.setText("正在检测 LSPosed 作用域…（需要 Root）\n");
@@ -1399,142 +503,24 @@ public class MainActivity extends Activity {
                         .append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
                                 .format(new Date()))
                         .append(" =====\n");
-                if (!hasRoot()) {
+                if (!mShell.hasRoot()) {
                     sb.append("❌ 无 Root 权限，无法读取 LSPosed 配置\n");
-                    final String r = sb.toString();
-                    runOnUiThread(() -> mLogView.setText(r));
+                    setLogText(sb.toString());
                     return;
                 }
-                // 1. 定位数据库
-                String dbPath = locateLsposedDb(sb);
-                if (dbPath == null) {
-                    sb.append("可能 LSPosed 未安装或路径不同，请手动打开 LSPosed 管理器查看。\n");
-                    final String r = sb.toString();
-                    runOnUiThread(() -> mLogView.setText(r));
-                    return;
-                }
-                sb.append("\n");
-
-                // 2. 拷贝数据库到模块缓存目录（含 -wal/-shm，用 Android SQLite API 读，
-                //    避免 sqlite3 命令缺失）。v1.8.6：自省 schema 后按真实结构查询。
-                String cachedDb = new File(getCacheDir(), "lspd_modules.db").getAbsolutePath();
-                java.util.LinkedHashSet<String> scopePkgs = new java.util.LinkedHashSet<>();
-                int enabled = -1;
-                try {
-                    suRun("cp " + dbPath + " " + cachedDb + "; "
-                            + "cp " + dbPath + "-wal " + cachedDb + "-wal 2>/dev/null; "
-                            + "cp " + dbPath + "-shm " + cachedDb + "-shm 2>/dev/null; "
-                            + "chmod 666 " + cachedDb + " " + cachedDb + "-wal "
-                            + cachedDb + "-shm 2>/dev/null; true");
-                    SQLiteDatabase db = SQLiteDatabase.openDatabase(cachedDb, null,
-                            SQLiteDatabase.OPEN_READONLY);
-                    try {
-                        java.util.LinkedHashSet<String> tables = new java.util.LinkedHashSet<>();
-                        android.database.Cursor tc = db.rawQuery(
-                                "SELECT name FROM sqlite_master WHERE type='table'", null);
-                        while (tc.moveToNext()) {
-                            tables.add(tc.getString(0));
-                        }
-                        tc.close();
-                        java.util.Set<String> modulesCols = tableColumns(db, "modules");
-                        if (tables.contains("modules") && modulesCols.contains("module_pkg_name")) {
-                            // 标准 LSPosed schema
-                            sb.append("schema: modules+scope 标准结构\n");
-                            int mid = -1;
-                            android.database.Cursor c = db.rawQuery(
-                                    "SELECT mid, enabled FROM modules WHERE module_pkg_name=?",
-                                    new String[]{MODULE_PKG});
-                            if (c.moveToFirst()) {
-                                mid = c.getInt(0);
-                                enabled = c.getInt(1);
-                            }
-                            c.close();
-                            if (mid >= 0) {
-                                c = db.rawQuery("SELECT app_pkg_name FROM scope WHERE mid=?",
-                                        new String[]{String.valueOf(mid)});
-                                while (c.moveToNext()) {
-                                    scopePkgs.add(c.getString(0));
-                                }
-                                c.close();
-                            }
-                        } else if (tables.contains("modules") && modulesCols.contains("scope")) {
-                            // 旧 JSON schema 兜底
-                            sb.append("schema: modules.scope JSON 结构\n");
-                            String scopeJson = null;
-                            android.database.Cursor c = db.rawQuery(
-                                    "SELECT scope, enabled FROM modules WHERE mid=?",
-                                    new String[]{MODULE_PKG});
-                            if (c.moveToFirst()) {
-                                scopeJson = c.getString(0);
-                                enabled = c.getInt(1);
-                            }
-                            c.close();
-                            if (scopeJson != null) {
-                                try {
-                                    JSONArray arr = new JSONArray(scopeJson);
-                                    for (int i = 0; i < arr.length(); i++) {
-                                        scopePkgs.add(arr.getString(i));
-                                    }
-                                } catch (JSONException ignored) {
-                                }
-                            }
-                        } else {
-                            sb.append("❌ 无法识别的数据库 schema，表: ").append(tables).append("\n");
-                            sb.append("  modules 列: ").append(modulesCols).append("\n");
-                        }
-                    } finally {
-                        db.close();
-                    }
-                    new File(cachedDb).delete();
-                    new File(cachedDb + "-wal").delete();
-                    new File(cachedDb + "-shm").delete();
-                } catch (Throwable t) {
-                    sb.append("❌ 读取数据库失败: ").append(t.getMessage()).append("\n");
-                    final String r = sb.toString();
-                    runOnUiThread(() -> mLogView.setText(r));
-                    return;
-                }
-
-                if (enabled == 0) {
-                    sb.append("❌ 模块在 LSPosed 中未启用！请在 LSPosed 管理器里打开 fytMusicVoiceInject 开关。\n");
-                } else if (enabled == 1) {
-                    sb.append("✅ 模块已启用\n");
-                } else {
-                    sb.append("⚠️ 无法确定模块启用状态\n");
-                }
-
-                if (enabled == -1) {
-                    sb.append("❌ 未查到模块记录（modules 表无 com.syu.voice.hook）\n");
-                    sb.append("请在 LSPosed 管理器 → 模块 → fytMusicVoiceInject 里勾选作用域。\n");
-                } else {
-                    sb.append("\n作用域勾选状态（目标 App）：\n");
-                    for (String pkg : FORCE_STOP_PKGS) {
-                        boolean checked = scopePkgs.contains(pkg);
-                        boolean installed;
-                        try {
-                            getPackageManager().getPackageInfo(pkg, 0);
-                            installed = true;
-                        } catch (Throwable t) {
-                            installed = false;
-                        }
-                        sb.append("  ").append(checked ? "✅" : "❌").append(" ").append(pkg);
-                        if (!installed) {
-                            sb.append("（未安装）");
-                        } else if (!checked) {
-                            sb.append(" ← 未勾选！请在 LSPosed 勾选此应用");
-                        }
-                        sb.append("\n");
-                    }
-                }
-
-                sb.append("\n说明：车助理(com.syu.voice)、TXZ语音(com.txznet.txz)、")
-                        .append("QQ音乐HD(com.tencent.qqmusicpad) 三个必须全部勾选，")
-                        .append("否则歌单/收藏播放无法生效。\n");
-
+                mScopeMgr.checkScope(sb);
                 LogManager.i(TAG, "LSPosed 作用域检测结果:\n" + sb.toString());
-                final String result = sb.toString();
-                runOnUiThread(() -> mLogView.setText(result));
+                setLogText(sb.toString());
             }
         }).start();
+    }
+
+    private void setLogText(final String text) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                mLogView.setText(text);
+            }
+        });
     }
 }
