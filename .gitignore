@@ -1,4 +1,4 @@
-# Gradle
+﻿# Gradle
 .gradle/
 build/
 **/build/
@@ -24,6 +24,7 @@ cert.txt
 
 # 内部开发文档（不入库）
 CHANGELOG.md
+CHANGELOG_ARCHIVE.md
 REFERENCE.md
 captures/
 .externalNativeBuild/
