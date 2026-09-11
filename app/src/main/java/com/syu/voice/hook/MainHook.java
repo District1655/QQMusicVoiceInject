@@ -1,5 +1,6 @@
 package com.syu.voice.hook;
 
+import android.app.Application;
 import android.content.Context;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -69,63 +70,99 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             xlog("分发 -> com.syu.voice（车助理）hook 流程");
 
-        // v1.8.7：同时 hook attachBaseContext 和 onCreate（与 QQProcessHook/TXZHook 同理），
-        // 防止 Application.onCreate 被子类跳过 super.onCreate() 导致初始化不触发。
-        final boolean[] appInited = {false};
-        XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
-                "attachBaseContext", Context.class, new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (appInited[0]) return;
-                        appInited[0] = true;
-                        Context app = (Context) param.thisObject;
-                        ContextHolder.set(app);
-                        LogManager.init(app);
-                        xlog("车助理 Application.attachBaseContext 已触发，ctx=" + app.getPackageName()
-                                + " logFile=" + LogManager.getLogFile());
-                        try {
-                            Context moduleCtx = app.createPackageContext(
-                                    "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
-                            boolean logEnabled = moduleCtx.getSharedPreferences(
-                                    "fyt_music_voice_prefs", Context.MODE_PRIVATE)
-                                    .getBoolean("log_enabled", true);
-                            LogManager.setEnabled(logEnabled);
-                        } catch (Throwable t) {
-                            LogManager.w(TAG, "读取日志开关失败，使用默认开启: " + t.getMessage());
-                        }
-                        LogManager.i(TAG, "模块加载，进程: " + lpparam.processName
-                                + "，版本: " + BuildConfig.VERSION_NAME
-                                + "，Context: " + app.getPackageName()
-                                + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
-                    }
-                });
-        // onCreate 作为双保险
-        XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
-                "onCreate", new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (appInited[0]) return;
-                        appInited[0] = true;
-                        Context app = (Context) param.thisObject;
-                        ContextHolder.set(app);
-                        LogManager.init(app);
-                        xlog("车助理 Application.onCreate 已触发，ctx=" + app.getPackageName()
-                                + " logFile=" + LogManager.getLogFile());
-                        LogManager.i(TAG, "模块加载，进程: " + lpparam.processName
-                                + "，版本: " + BuildConfig.VERSION_NAME
-                                + "，Context: " + app.getPackageName()
-                                + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
-                    }
-                });
+            // 1) 最关键：音乐工具白名单注入（不依赖 Context），必须最先注册。
+            //    v1.8.9 教训：v1.8.7/1.8.8 把 Application.attachBaseContext hook 放在前面，
+            //    而 attachBaseContext 定义在父类 ContextWrapper 上、Application 自身未声明，
+            //    Android 10 + LSPosed 1.9.2 exact 查找抛 NoSuchMethodError，异常中断整个
+            //    handleLoadPackage → MusicToolInject 未注册 → 车助理设置里选不到
+            //    QQ音乐/网易云。每个 hook 独立 try/catch，互不影响。
+            try {
+                MusicToolInject.hook(lpparam.classLoader);
+                xlog("车助理 MusicToolInject.hook 注册完成");
+            } catch (Throwable t) {
+                xlog("!! 车助理 MusicToolInject.hook 异常: " + t);
+                XposedBridge.log(t);
+            }
 
-        // 立即 hook 音乐工具白名单（不需要等 Application.onCreate）
-        MusicToolInject.hook(lpparam.classLoader);
-        xlog("车助理 hook 注册阶段完成（MusicToolInject.hook 已返回）");
+            // 2) Application 生命周期 hook：仅用于拿 Context 初始化文件日志。
+            hookVoiceAppLifecycle(lpparam.classLoader, lpparam.processName);
+            xlog("车助理 hook 注册阶段完成");
         } catch (Throwable t) {
-            // handleLoadPackage 内部任何未预期异常都必须落到 LSPosed 日志，避免静默失败
-            XposedBridge.log("[fyt] !! handleLoadPackage 处理 " + pkg + " 时抛出异常");
+            // 兜底：任何未预期异常只记录、不再 rethrow——rethrow 会导致本模块在该进程
+            // 的后续初始化全部被 LSPosed 放弃（v1.8.7 车助理整链失效的教训）。
+            XposedBridge.log("[fyt] !! handleLoadPackage 处理 " + pkg + " 时抛出异常（已吞掉，不影响其他 hook）");
             XposedBridge.log(t);
-            throw t;
+        }
+    }
+
+    /**
+     * hook Application 生命周期用于初始化文件日志（车助理进程）。
+     *
+     * v1.8.9：attachBaseContext 必须 hook 在 android.content.ContextWrapper 上——
+     * Application 自身没有声明 attachBaseContext(Context)（继承自 ContextWrapper），
+     * 直接 hook "android.app.Application" 在 Android 10/LSPosed 1.9.2 上会抛
+     * NoSuchMethodError#exact。ContextWrapper 的该方法还会被 Service 等子类调用，
+     * 回调里用 instanceof Application 过滤。
+     * 两个 hook 各自独立 try/catch，任一失败都不影响另一个与白名单注入。
+     */
+    private void hookVoiceAppLifecycle(final ClassLoader cl, final String processName) {
+        final boolean[] appInited = {false};
+        try {
+            XposedHelpers.findAndHookMethod("android.content.ContextWrapper", cl,
+                    "attachBaseContext", Context.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (appInited[0] || !(param.thisObject instanceof Application)) {
+                                return;
+                            }
+                            appInited[0] = true;
+                            Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            xlog("车助理 Application.attachBaseContext 已触发，ctx=" + app.getPackageName()
+                                    + " logFile=" + LogManager.getLogFile());
+                            try {
+                                Context moduleCtx = app.createPackageContext(
+                                        "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
+                                boolean logEnabled = moduleCtx.getSharedPreferences(
+                                        "fyt_music_voice_prefs", Context.MODE_PRIVATE)
+                                        .getBoolean("log_enabled", true);
+                                LogManager.setEnabled(logEnabled);
+                            } catch (Throwable t) {
+                                LogManager.w(TAG, "读取日志开关失败，使用默认开启: " + t.getMessage());
+                            }
+                            LogManager.i(TAG, "模块加载，进程: " + processName
+                                    + "，版本: " + BuildConfig.VERSION_NAME
+                                    + "，Context: " + app.getPackageName()
+                                    + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
+                        }
+                    });
+            xlog("车助理 hook ContextWrapper.attachBaseContext 注册成功");
+        } catch (Throwable t) {
+            xlog("车助理 hook ContextWrapper.attachBaseContext 失败（不影响功能）: " + t);
+        }
+        // onCreate 作为双保险
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+                    "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (appInited[0]) return;
+                            appInited[0] = true;
+                            Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            xlog("车助理 Application.onCreate 已触发，ctx=" + app.getPackageName()
+                                    + " logFile=" + LogManager.getLogFile());
+                            LogManager.i(TAG, "模块加载，进程: " + processName
+                                    + "，版本: " + BuildConfig.VERSION_NAME
+                                    + "，Context: " + app.getPackageName()
+                                    + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
+                        }
+                    });
+            xlog("车助理 hook Application.onCreate 注册成功");
+        } catch (Throwable t) {
+            xlog("车助理 hook Application.onCreate 失败（不影响功能）: " + t);
         }
     }
 

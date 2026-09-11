@@ -1,5 +1,6 @@
 package com.syu.voice.hook;
 
+import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -195,20 +196,22 @@ public final class QQProcessHook {
         }
 
         // 5) Application 生命周期 hook：初始化日志 + 主动 bind ApiService 确保实例存在
-        //    v1.8.7：同时 hook attachBaseContext 和 onCreate。
-        //    反编译发现 MusicApplication.onCreate() 的 super.onCreate() 被 SwordProxy 云控
+        //    v1.8.9：attachBaseContext 必须 hook 在 android.content.ContextWrapper 上——
+        //    Application 自身未声明该方法（继承自 ContextWrapper），直接 hook
+        //    "android.app.Application" 在 Android 10/LSPosed 1.9.2 上抛
+        //    NoSuchMethodError#exact（v1.8.7/1.8.8 实测日志）。ContextWrapper 的
+        //    attachBaseContext 也会被 Service 等调用，回调里 instanceof Application 过滤。
+        //    背景：MusicApplication.onCreate() 的 super.onCreate() 被 SwordProxy 云控
         //    条件包裹（bArr[743]>>4&1），云控开关打开时整个 super.onCreate() 被跳过，
-        //    导致我们 hook 在 Application.onCreate 上的回调永远不触发。
-        //    attachBaseContext 由框架 Instrumentation.newApplication 调用，早于 onCreate，
-        //    且子类几乎不可能跳过 super.attachBaseContext()——即使 onCreate 被云控代理，
-        //    attachBaseContext 仍正常触发，是更可靠的初始化时机。
+        //    所以 attachBaseContext 才是更可靠的初始化时机（框架 Instrumentation 调用，
+        //    子类几乎不可能跳过 super.attachBaseContext()）。
         final String pkgRef = pkg;
         try {
-            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+            XposedHelpers.findAndHookMethod("android.content.ContextWrapper", cl,
                     "attachBaseContext", Context.class, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            if (sAppInited) {
+                            if (sAppInited || !(param.thisObject instanceof Application)) {
                                 return;
                             }
                             sAppInited = true;
@@ -235,9 +238,9 @@ public final class QQProcessHook {
                             applyEnvironmentFixes(pkgRef);
                         }
                     });
-            MainHook.xlog("[" + pkg + "] hook Application.attachBaseContext 注册成功");
+            MainHook.xlog("[" + pkg + "] hook ContextWrapper.attachBaseContext 注册成功");
         } catch (Throwable t) {
-            MainHook.xlog("[" + pkg + "] hook Application.attachBaseContext 失败: " + t);
+            MainHook.xlog("[" + pkg + "] hook ContextWrapper.attachBaseContext 失败: " + t);
         }
         // 同时保留 onCreate hook 作为双保险（若 attachBaseContext 未触发但 onCreate 触发了）
         try {

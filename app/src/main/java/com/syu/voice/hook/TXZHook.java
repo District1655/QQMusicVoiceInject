@@ -1,5 +1,6 @@
 package com.syu.voice.hook;
 
+import android.app.Application;
 import android.content.Context;
 
 import de.robv.android.xposed.XC_MethodHook;
@@ -70,15 +71,18 @@ public final class TXZHook {
     public static void hook(ClassLoader cl) {
         // v1.8.6：入口立即打 LSPosed 日志，确认 TXZ 进程确实进入 hook() 注册阶段
         MainHook.xlog("TXZHook.hook() 进入 cl=" + (cl == null ? "null" : cl.getClass().getName()));
-        // v1.8.7：同时 hook attachBaseContext 和 onCreate，解决 Application.onCreate
-        // 可能被子类跳过 super.onCreate() 的问题（与 QQProcessHook 同理）。
-        // attachBaseContext 由框架调用，早于 onCreate，且几乎不可能被跳过。
+        // v1.8.9：attachBaseContext 必须 hook 在 android.content.ContextWrapper 上——
+        // Application 自身未声明该方法（继承自 ContextWrapper），直接 hook
+        // "android.app.Application" 在 Android 10/LSPosed 1.9.2 上抛
+        // NoSuchMethodError#exact（v1.8.7/1.8.8 实测日志）。ContextWrapper 的
+        // attachBaseContext 也会被 Service 等调用，回调里 instanceof Application 过滤。
+        // attachBaseContext 早于 onCreate，防止子类跳过 super.onCreate() 导致初始化丢失。
         try {
-            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+            XposedHelpers.findAndHookMethod("android.content.ContextWrapper", cl,
                     "attachBaseContext", Context.class, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            if (sAppInited) return;
+                            if (sAppInited || !(param.thisObject instanceof Application)) return;
                             sAppInited = true;
                             Context app = (Context) param.thisObject;
                             ContextHolder.set(app);
@@ -101,9 +105,9 @@ public final class TXZHook {
                                     + LogManager.getLogFile());
                         }
                     });
-            MainHook.xlog("TXZ Application.attachBaseContext hook 注册成功");
+            MainHook.xlog("TXZ hook ContextWrapper.attachBaseContext 注册成功");
         } catch (Throwable t) {
-            MainHook.xlog("TXZ hook Application.attachBaseContext 失败: " + t);
+            MainHook.xlog("TXZ hook ContextWrapper.attachBaseContext 失败: " + t);
         }
         // 同时保留 onCreate hook 作为双保险
         try {
