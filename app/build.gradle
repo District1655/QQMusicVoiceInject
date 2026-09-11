@@ -11,8 +11,8 @@ android {
         minSdk 21
         targetSdk 33
         // 版本号规则：1.1.0 -> 10100（主*10000 + 次*100 + 补丁），与 GitHub Release tag vX.Y.Z 对应
-        versionCode 10806
-        versionName "1.8.6"
+        versionCode 10807
+        versionName "1.8.7"
     }
 
     // 显式配置固定 debug keystore，确保 CI 与本地签名一致（避免覆盖安装时报签名不一致）

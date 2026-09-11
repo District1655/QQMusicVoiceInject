@@ -64,21 +64,26 @@ public final class TXZHook {
         }
     }
 
+    /** v1.8.7：attachBaseContext/onCreate 双保险防重复初始化 */
+    private static volatile boolean sAppInited;
+
     public static void hook(ClassLoader cl) {
         // v1.8.6：入口立即打 LSPosed 日志，确认 TXZ 进程确实进入 hook() 注册阶段
         MainHook.xlog("TXZHook.hook() 进入 cl=" + (cl == null ? "null" : cl.getClass().getName()));
-        // v1.8.1：TXZ 进程此前从未初始化文件日志（handleLoadPackage 时无 Context），
-        // 导致导出的日志包里 TXZ 永远"未找到"，无法判断模块是否注入。
-        // hook Application.onCreate 拿到 Context 后初始化日志并打印加载版本。
+        // v1.8.7：同时 hook attachBaseContext 和 onCreate，解决 Application.onCreate
+        // 可能被子类跳过 super.onCreate() 的问题（与 QQProcessHook 同理）。
+        // attachBaseContext 由框架调用，早于 onCreate，且几乎不可能被跳过。
         try {
             XposedHelpers.findAndHookMethod("android.app.Application", cl,
-                    "onCreate", new XC_MethodHook() {
+                    "attachBaseContext", Context.class, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
+                            if (sAppInited) return;
+                            sAppInited = true;
                             Context app = (Context) param.thisObject;
                             ContextHolder.set(app);
                             LogManager.init(app);
-                            MainHook.xlog("TXZ Application.onCreate 已触发 ctx="
+                            MainHook.xlog("TXZ Application.attachBaseContext 已触发 ctx="
                                     + app.getPackageName() + " logFile="
                                     + LogManager.getLogFile());
                             try {
@@ -91,6 +96,29 @@ public final class TXZHook {
                             } catch (Throwable t) {
                                 LogManager.w(TAG, "TXZ: 读取日志开关失败，默认开启");
                             }
+                            LogManager.i(TAG, "模块加载（TXZ语音进程）v"
+                                    + BuildConfig.VERSION_NAME + " 日志文件="
+                                    + LogManager.getLogFile());
+                        }
+                    });
+            MainHook.xlog("TXZ Application.attachBaseContext hook 注册成功");
+        } catch (Throwable t) {
+            MainHook.xlog("TXZ hook Application.attachBaseContext 失败: " + t);
+        }
+        // 同时保留 onCreate hook 作为双保险
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+                    "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (sAppInited) return;
+                            sAppInited = true;
+                            Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            MainHook.xlog("TXZ Application.onCreate 已触发 ctx="
+                                    + app.getPackageName() + " logFile="
+                                    + LogManager.getLogFile());
                             LogManager.i(TAG, "模块加载（TXZ语音进程）v"
                                     + BuildConfig.VERSION_NAME + " 日志文件="
                                     + LogManager.getLogFile());

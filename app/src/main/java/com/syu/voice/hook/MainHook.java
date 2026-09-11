@@ -36,6 +36,15 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {
         }
 
+        // v1.8.7：在 handleLoadPackage 入口立即初始化文件日志（不依赖 Context），
+        // 用硬编码路径写 /sdcard/Android/data/com.syu.voice.hook/files/logs/。
+        // 解决 Application.onCreate 被 SwordProxy 云控跳过导致 LogManager.init 不触发的问题。
+        // 后续 attachBaseContext/onCreate 触发时会迁移到各进程自己的目录。
+        if ("com.txznet.txz".equals(pkg) || QQProcessHook.isQQMusicPkg(pkg)
+                || "com.syu.voice".equals(pkg)) {
+            LogManager.initEarly();
+        }
+
         try {
             // TXZ 语音主服务（com.txznet.txz）：v1.3.2 起 hook 音乐模块 y()，
             // 确保"上一曲/下一曲/暂停"等控制命令走 MusicTool 代理而不是系统媒体键
@@ -60,20 +69,20 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             xlog("分发 -> com.syu.voice（车助理）hook 流程");
 
-        // hook Application.onCreate：在 Application 初始化完成后拿到稳定的 Context，
-        // 初始化文件日志 + 设置全局 Context（供 MediaSession 控制使用）。
-        // 不使用 ActivityThread.currentApplication() 反射，因为 ActivityThread 是隐藏 API，
-        // 在目标进程 classLoader 里可能反射失败，导致日志和播放控制全部失效。
+        // v1.8.7：同时 hook attachBaseContext 和 onCreate（与 QQProcessHook/TXZHook 同理），
+        // 防止 Application.onCreate 被子类跳过 super.onCreate() 导致初始化不触发。
+        final boolean[] appInited = {false};
         XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
-                "onCreate", new XC_MethodHook() {
+                "attachBaseContext", Context.class, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
+                        if (appInited[0]) return;
+                        appInited[0] = true;
                         Context app = (Context) param.thisObject;
                         ContextHolder.set(app);
                         LogManager.init(app);
-                        xlog("车助理 Application.onCreate 已触发，ctx=" + app.getPackageName()
+                        xlog("车助理 Application.attachBaseContext 已触发，ctx=" + app.getPackageName()
                                 + " logFile=" + LogManager.getLogFile());
-                        // 从模块 App 的 SharedPreferences 读取日志开关（默认开启）
                         try {
                             Context moduleCtx = app.createPackageContext(
                                     "com.syu.voice.hook", Context.CONTEXT_IGNORE_SECURITY);
@@ -84,6 +93,24 @@ public class MainHook implements IXposedHookLoadPackage {
                         } catch (Throwable t) {
                             LogManager.w(TAG, "读取日志开关失败，使用默认开启: " + t.getMessage());
                         }
+                        LogManager.i(TAG, "模块加载，进程: " + lpparam.processName
+                                + "，版本: " + BuildConfig.VERSION_NAME
+                                + "，Context: " + app.getPackageName()
+                                + "，文件日志: " + (LogManager.isEnabled() ? "开" : "关"));
+                    }
+                });
+        // onCreate 作为双保险
+        XposedHelpers.findAndHookMethod("android.app.Application", lpparam.classLoader,
+                "onCreate", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (appInited[0]) return;
+                        appInited[0] = true;
+                        Context app = (Context) param.thisObject;
+                        ContextHolder.set(app);
+                        LogManager.init(app);
+                        xlog("车助理 Application.onCreate 已触发，ctx=" + app.getPackageName()
+                                + " logFile=" + LogManager.getLogFile());
                         LogManager.i(TAG, "模块加载，进程: " + lpparam.processName
                                 + "，版本: " + BuildConfig.VERSION_NAME
                                 + "，Context: " + app.getPackageName()

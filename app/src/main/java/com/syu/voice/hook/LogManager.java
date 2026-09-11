@@ -46,9 +46,65 @@ public final class LogManager {
         return sEnabled;
     }
 
+    /**
+     * 早期初始化：不依赖 Context，在 handleLoadPackage 入口即可调用。
+     * 用硬编码路径 /sdcard/Android/data/com.syu.voice.hook/files/logs/ 写文件日志，
+     * 解决 Application.onCreate 被 QQ 音乐 SwordProxy 云控跳过导致 LogManager.init 不触发的问题。
+     * 后续 init(Context) 被调用时会迁移到各进程自己的外部私有目录。
+     */
+    public static synchronized void initEarly() {
+        if (sLogFile != null) {
+            return;
+        }
+        try {
+            File dir = new File(Environment.getExternalStorageDirectory(), LOG_DIR);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            if (dir.isDirectory()) {
+                sLogFile = new File(dir, LOG_NAME);
+                write("==== 日志启动(early) " + stamp() + " (pid=" + android.os.Process.myPid() + ") ====");
+                Log.i(TAG, "日志文件(early): " + sLogFile.getAbsolutePath());
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "日志早期初始化失败", t);
+        }
+    }
+
     /** 在目标进程内初始化日志文件（幂等）。各进程写自己 App 的外部私有目录，无需任何权限 */
     public static synchronized void init(Context context) {
         if (sLogFile != null) {
+            // 已由 initEarly() 初始化过，如果 Context 可用则迁移到进程专属目录
+            if (context != null) {
+                try {
+                    File dir = context.getExternalFilesDir("logs");
+                    if (dir != null && dir.isDirectory()) {
+                        File newFile = new File(dir, LOG_NAME);
+                        if (!newFile.getAbsolutePath().equals(sLogFile.getAbsolutePath())) {
+                            // 把 early 日志内容搬到新文件
+                            byte[] data = new byte[0];
+                            try {
+                                java.io.FileInputStream fis = new java.io.FileInputStream(sLogFile);
+                                data = new byte[(int) Math.min(sLogFile.length(), 1024 * 512)];
+                                fis.read(data);
+                                fis.close();
+                            } catch (Throwable ignored) {
+                            }
+                            sLogFile = newFile;
+                            if (data.length > 0) {
+                                try {
+                                    java.io.FileOutputStream fos = new java.io.FileOutputStream(sLogFile, true);
+                                    fos.write(data);
+                                    fos.close();
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            write("==== 日志迁移到进程目录 " + stamp() + " ====");
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
             return;
         }
         try {

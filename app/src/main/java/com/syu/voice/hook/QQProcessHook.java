@@ -38,8 +38,12 @@ public final class QQProcessHook {
 
     private static final String RECEIVER_CAR =
             "com.tencent.qqmusiccar.app.reciver.BroadcastReceiverCenterForThird";
+    private static final String RECEIVER_PAD =
+            "com.tencent.qqmusicpad.app.reciver.BroadcastReceiverCenterForThird";
     private static final String API_SERVICE_CAR =
             "com.tencent.qqmusiccar.third.api.QQMusicApiService";
+    private static final String API_SERVICE_PAD =
+            "com.tencent.qqmusicpad.third.api.QQMusicApiService";
     private static final String API_IMPL =
             "com.tencent.qqmusiccar.third.api.apiImpl.ApiMethodsImpl";
     private static final String SERVICE_PROXY_HELPER =
@@ -58,6 +62,8 @@ public final class QQProcessHook {
     // ------------------------------------------------------------------
     private static volatile String sPendingQuery;
     private static volatile int sPendingCmd = -2;   // -2 表示无 pending 控制
+    /** v1.8.7：attachBaseContext/onCreate 双保险防重复初始化 */
+    private static volatile boolean sAppInited;
     private static volatile long sPendingExtra;
     private static volatile int sPendingFolder = -2; // -2 表示无 pending 歌单（201收藏/104猜你喜欢/108每日30首/2排行榜）
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
@@ -112,18 +118,28 @@ public final class QQProcessHook {
         }
 
         // 2) hook QQMusicApiService.onCreate：拿 service -> e(QQMusicApiImpl) -> e(ApiMethodsImpl)
-        try {
-            XposedHelpers.findAndHookMethod(API_SERVICE_CAR, cl, "onCreate",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            captureFromService(param.thisObject);
-                            maybeFlushPending();
-                        }
-                    });
-            LogManager.d(TAG, "[" + pkg + "] hook QQMusicApiService.onCreate 成功");
-        } catch (Throwable t) {
-            LogManager.d(TAG, "[" + pkg + "] hook QQMusicApiService.onCreate 跳过: " + t.getMessage());
+        //    尝试 car 和 pad 两个类名（pad 版是空壳继承 car 版，但直接 hook 子类有时更可靠）
+        boolean apiServiceHooked = false;
+        for (String svcName : new String[]{API_SERVICE_CAR, API_SERVICE_PAD}) {
+            try {
+                XposedHelpers.findAndHookMethod(svcName, cl, "onCreate",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                captureFromService(param.thisObject);
+                                maybeFlushPending();
+                            }
+                        });
+                LogManager.d(TAG, "[" + pkg + "] hook " + svcName + ".onCreate 成功");
+                MainHook.xlog("[" + pkg + "] hook " + svcName + ".onCreate 成功");
+                apiServiceHooked = true;
+                break;
+            } catch (Throwable t) {
+                MainHook.xlog("[" + pkg + "] hook " + svcName + ".onCreate 跳过: " + t.getMessage());
+            }
+        }
+        if (!apiServiceHooked) {
+            LogManager.d(TAG, "[" + pkg + "] hook QQMusicApiService.onCreate 全部跳过");
         }
 
         // 3) hook 播放控制前置检查：强制跳过 PlayerService 绑定检查
@@ -138,46 +154,68 @@ public final class QQProcessHook {
                         }
                     });
             LogManager.i(TAG, "[" + pkg + "] 已 hook QQMusicServiceProxyHelper.m()，播放控制不再受 PlayerService 检查拦截");
+            MainHook.xlog("[" + pkg + "] hook ServiceProxyHelper.m() 成功");
         } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook ServiceProxyHelper.m() 失败: " + t);
             LogManager.e(TAG, "[" + pkg + "] hook QQMusicServiceProxyHelper.m() 失败", t);
         }
 
         // 4) hook 第三方控制广播接收器：拦截点歌/播放控制，改走内部 API 后台播放
-        try {
-            XposedHelpers.findAndHookMethod(RECEIVER_CAR, cl,
-                    "onReceive", Context.class, Intent.class, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            try {
-                                Context ctx = (Context) param.args[0];
-                                Intent intent = (Intent) param.args[1];
-                                if (interceptBroadcast(intent)) {
-                                    param.setResult(null); // 消费广播，阻止弹搜索框/原逻辑
+        //    尝试 car（基类）和 pad（子类）两个类名，hook 到任一即可
+        boolean receiverHooked = false;
+        for (String recvName : new String[]{RECEIVER_CAR, RECEIVER_PAD}) {
+            try {
+                XposedHelpers.findAndHookMethod(recvName, cl,
+                        "onReceive", Context.class, Intent.class, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                try {
+                                    Context ctx = (Context) param.args[0];
+                                    Intent intent = (Intent) param.args[1];
+                                    if (interceptBroadcast(intent)) {
+                                        param.setResult(null); // 消费广播，阻止弹搜索框/原逻辑
+                                    }
+                                } catch (Throwable t) {
+                                    LogManager.e(TAG, "拦截广播异常，放行原逻辑", t);
                                 }
-                            } catch (Throwable t) {
-                                LogManager.e(TAG, "拦截广播异常，放行原逻辑", t);
                             }
-                        }
-                    });
-            LogManager.i(TAG, "[" + pkg + "] 已 hook 第三方控制广播（点歌/播放控制将走内部 API 后台播放）");
-            MainHook.xlog("[" + pkg + "] hook 第三方控制广播成功");
-        } catch (Throwable t) {
-            MainHook.xlog("[" + pkg + "] hook BroadcastReceiverCenterForThird 失败: " + t);
-            LogManager.e(TAG, "[" + pkg + "] hook BroadcastReceiverCenterForThird 失败", t);
+                        });
+                LogManager.i(TAG, "[" + pkg + "] 已 hook " + recvName
+                        + ".onReceive（点歌/播放控制将走内部 API 后台播放）");
+                MainHook.xlog("[" + pkg + "] hook " + recvName + ".onReceive 成功");
+                receiverHooked = true;
+                break;
+            } catch (Throwable t) {
+                MainHook.xlog("[" + pkg + "] hook " + recvName + " 跳过: " + t.getMessage());
+            }
+        }
+        if (!receiverHooked) {
+            MainHook.xlog("[" + pkg + "] hook BroadcastReceiverCenterForThird 全部失败");
+            LogManager.e(TAG, "[" + pkg + "] hook BroadcastReceiverCenterForThird 全部失败");
         }
 
-        // 5) Application.onCreate：初始化日志 + 主动 bind ApiService 确保实例存在
-        //    （包 try/catch：此 hook 失败不能影响 1~4 已注册的广播拦截；
-        //      且失败必须落 logcat——否则播放器进程只有拦截日志、没有文件日志，极难排查）
+        // 5) Application 生命周期 hook：初始化日志 + 主动 bind ApiService 确保实例存在
+        //    v1.8.7：同时 hook attachBaseContext 和 onCreate。
+        //    反编译发现 MusicApplication.onCreate() 的 super.onCreate() 被 SwordProxy 云控
+        //    条件包裹（bArr[743]>>4&1），云控开关打开时整个 super.onCreate() 被跳过，
+        //    导致我们 hook 在 Application.onCreate 上的回调永远不触发。
+        //    attachBaseContext 由框架 Instrumentation.newApplication 调用，早于 onCreate，
+        //    且子类几乎不可能跳过 super.attachBaseContext()——即使 onCreate 被云控代理，
+        //    attachBaseContext 仍正常触发，是更可靠的初始化时机。
+        final String pkgRef = pkg;
         try {
             XposedHelpers.findAndHookMethod("android.app.Application", cl,
-                    "onCreate", new XC_MethodHook() {
+                    "attachBaseContext", Context.class, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
+                            if (sAppInited) {
+                                return;
+                            }
+                            sAppInited = true;
                             final Context app = (Context) param.thisObject;
                             ContextHolder.set(app);
                             LogManager.init(app);
-                            MainHook.xlog("[" + pkg + "] QQ Application.onCreate 已触发 ctx="
+                            MainHook.xlog("[" + pkgRef + "] QQ Application.attachBaseContext 已触发 ctx="
                                     + app.getPackageName() + " logFile="
                                     + LogManager.getLogFile());
                             try {
@@ -188,18 +226,45 @@ public final class QQProcessHook {
                                         .getBoolean("log_enabled", true);
                                 LogManager.setEnabled(logEnabled);
                             } catch (Throwable t) {
-                                LogManager.w(TAG, "[" + pkg + "] 读取日志开关失败，默认开启");
+                                LogManager.w(TAG, "[" + pkgRef + "] 读取日志开关失败，默认开启");
                             }
-                            LogManager.i(TAG, "[" + pkg + "] 模块加载（QQ音乐进程）v"
+                            LogManager.i(TAG, "[" + pkgRef + "] 模块加载（QQ音乐进程）v"
                                     + BuildConfig.VERSION_NAME + " 日志文件="
                                     + LogManager.getLogFile());
-                            ensureApiService(app, pkg);
-                            applyEnvironmentFixes(pkg);
+                            ensureApiService(app, pkgRef);
+                            applyEnvironmentFixes(pkgRef);
                         }
                     });
+            MainHook.xlog("[" + pkg + "] hook Application.attachBaseContext 注册成功");
+        } catch (Throwable t) {
+            MainHook.xlog("[" + pkg + "] hook Application.attachBaseContext 失败: " + t);
+        }
+        // 同时保留 onCreate hook 作为双保险（若 attachBaseContext 未触发但 onCreate 触发了）
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Application", cl,
+                    "onCreate", new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (sAppInited) {
+                                return;
+                            }
+                            sAppInited = true;
+                            final Context app = (Context) param.thisObject;
+                            ContextHolder.set(app);
+                            LogManager.init(app);
+                            MainHook.xlog("[" + pkgRef + "] QQ Application.onCreate 已触发 ctx="
+                                    + app.getPackageName() + " logFile="
+                                    + LogManager.getLogFile());
+                            LogManager.i(TAG, "[" + pkgRef + "] 模块加载（QQ音乐进程）v"
+                                    + BuildConfig.VERSION_NAME + " 日志文件="
+                                    + LogManager.getLogFile());
+                            ensureApiService(app, pkgRef);
+                            applyEnvironmentFixes(pkgRef);
+                        }
+                    });
+            MainHook.xlog("[" + pkg + "] hook Application.onCreate 注册成功");
         } catch (Throwable t) {
             MainHook.xlog("[" + pkg + "] hook Application.onCreate 失败: " + t);
-            LogManager.e(TAG, "[" + pkg + "] hook Application.onCreate 失败（文件日志不可用）", t);
         }
 
         // 6) v1.8.1 运行环境修复（防崩溃 + 防偷跑下载），与 1~5 互不依赖：
