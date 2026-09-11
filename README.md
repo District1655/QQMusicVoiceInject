@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.8.9）
+## 支持列表（v1.8.10）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -100,11 +100,11 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10809
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10810
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（v1.8.8 起 xposedscope 含 7 个目标包，含网易云两包）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.9
+        └── java/com/syu/voice/hook/   # v1.8.10
             ├── MainHook.java         # Xposed 入口（进程分流；v1.8.6 XposedBridge.log 全链路埋点；v1.8.7 attachBaseContext+initEarly；v1.8.9 改 hook ContextWrapper+白名单注入提前独立容错）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化；v1.8.6 LSPosed 日志埋点；v1.8.9 attachBaseContext 改 hook ContextWrapper）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存；v1.8.6 LSPosed 日志埋点；v1.8.7 pad类名+initEarly；v1.8.9 attachBaseContext 改 hook ContextWrapper）
@@ -113,7 +113,7 @@ fytMusicVoiceInject/
             ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充；v1.8.6 "xxx喜欢"结尾兜底）
             ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；action=30 歌单 m0=201/104/108/2；v1.8.3 原生 action 兜底）
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录；v1.8.7 initEarly 无 Context 早期初始化）
-            ├── ContextHolder.java    # Application Context 持有
+            ├── ContextHolder.java    # Application Context 持有（v1.8.10：attachBaseContext 阶段 getApplicationContext() 为 null，回退存 Application 本身）
             ├── UpdateManager.java    # GitHub Releases 检查/下载/安装
             ├── MainActivity.java     # 模块 UI 编排（v1.8.8 起纯 UI/线程/对话框，业务下沉到下列 5 个类；526 行）
             ├── ScopeConfig.java      # v1.8.8 常量：模块包名/7 个作用域包/日志包列表/LSPosed DB 路径
@@ -171,7 +171,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.9 | **修复 v1.8.7 起车助理设置选不到 QQ音乐/网易云等音乐源的回归**：①`attachBaseContext(Context)` 实际声明在父类 `android.content.ContextWrapper` 上、Application 自身未声明，v1.8.7 hook "android.app.Application" 在 Android10/LSPosed1.9.2 抛 NoSuchMethodError#exact——车助理分支该注册无独立 try/catch，异常中止整个 handleLoadPackage，MusicToolInject 白名单注入完全没执行；三入口（MainHook/TXZHook/QQProcessHook）统一改 hook ContextWrapper + 回调 instanceof Application 过滤；②车助理分支 MusicToolInject.hook 提前到生命周期 hook 之前并独立 try/catch，外层 catch 不再 rethrow（当前版本） |
+| v1.8.10 | **修复 v1.8.9 音乐源恢复后点歌/控制全部失效的回归**：attachBaseContext 回调执行时 `LoadedApk.mApplication` 尚未赋值，`app.getApplicationContext()` 返回 null，ContextHolder（只写一次）被 null 永久占位，onCreate 回调又被防重标志跳过 → 车助理代理 `qq()` 返回 null → 点歌全降级到 QQ音乐HD 不支持的 MediaSession playFromSearch（日志"获取 MediaSession 失败"）。ContextHolder.set 改为 applicationContext 为 null 时回退存 Application 本身（mBase 已绑定，可正常发广播）；恢复 action=8 点歌/controlPlay/playFolder 全通道（当前版本） |
+| v1.8.9 | **修复 v1.8.7 起车助理设置选不到 QQ音乐/网易云等音乐源的回归**：①`attachBaseContext(Context)` 实际声明在父类 `android.content.ContextWrapper` 上、Application 自身未声明，v1.8.7 hook "android.app.Application" 在 Android10/LSPosed1.9.2 抛 NoSuchMethodError#exact——车助理分支该注册无独立 try/catch，异常中止整个 handleLoadPackage，MusicToolInject 白名单注入完全没执行；三入口（MainHook/TXZHook/QQProcessHook）统一改 hook ContextWrapper + 回调 instanceof Application 过滤；②车助理分支 MusicToolInject.hook 提前到生命周期 hook 之前并独立 try/catch，外层 catch 不再 rethrow |
 | v1.8.8 | 工程治理：①manifest xposedscope 补齐网易云两包（文档记 v1.4.1 已加但实际从未包含，LSPosed 管理器无法勾选；此前靠一键勾选写 DB 绕过）；②MainActivity 1540 行拆成 UI + ScopeConfig/RootShell/LogCollector/LsposedScopeManager/AppControl 五个职责类（行为不变，删两处死代码）；③cert.txt 换成真实签名信息；④SDK 迁到 D:\android-sdk（当前版本） |
 | v1.8.7 | ①hook Application.attachBaseContext 替代/补充 onCreate——反编译发现 MusicApplication.onCreate 的 super.onCreate() 被 SwordProxy 云控条件跳过，导致 Application.onCreate 回调不触发；attachBaseContext 由框架调用且子类不可能跳过；②LogManager.initEarly() 不依赖 Context 在 handleLoadPackage 入口即写文件日志；③BroadcastReceiver/ApiService 尝试 qqmusicpad 子类名；④所有 hook 步骤补全 xlog |
 | v1.8.6 | ①模块入口/分发/hook 注册全链路改走 XposedBridge.log（`[fyt]` 前缀，直接落 LSPosed modules.log，导出可查），解决"模块类已加载但 hook 是否执行无法证实"的盲区；②重写作用域读写：sqlite_master 自省适配 LSPosed 1.9.x 真实 schema（modules+scope 两表），修复一键勾选 chmod 644 只读打不开数据库、检测 SQL 表结构假设错误两个 bug；写回 cp 覆盖保留属主/SELinux 上下文；③收藏关键词兜底扩充：title 以"喜欢"结尾（如 ASR 误识"china喜欢"）→ 收藏歌单 |
