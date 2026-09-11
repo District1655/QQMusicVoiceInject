@@ -11,6 +11,7 @@ release/
 .idea/
 *.iml
 .vscode/
+.codeartsdoer/
 
 # 系统
 .DS_Store
