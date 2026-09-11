@@ -128,6 +128,18 @@ public final class MusicToolInject {
                         }
                     });
 
+            // ------------------------------------------------------------
+            // 5) v1.8.11：车助理场景链（VoiceAdapter$17/$18）歌单兜底拦截。
+            //    云端把"播放收藏的歌吧"下发成 model.keywords（title 为空）时，
+            //    在车助理进程内按 ASR 原文直接路由到本模块 MusicTool。
+            //    独立 try/catch，注册失败不影响白名单注入。
+            // ------------------------------------------------------------
+            try {
+                ScenePlaylistHook.hook(cl);
+            } catch (Throwable t) {
+                LogManager.e(TAG, "ScenePlaylistHook 注册异常", t);
+            }
+
             LogManager.i(TAG, "hook 完成，目标包名: " + java.util.Arrays.toString(TARGET_MUSIC_PKGS));
         } catch (Throwable t) {
             LogManager.e(TAG, "hook 失败", t);

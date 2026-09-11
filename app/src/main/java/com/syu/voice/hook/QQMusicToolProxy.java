@@ -37,6 +37,53 @@ public final class QQMusicToolProxy {
     private static final String MODEL = "com.txznet.sdk.TXZMusicManager$MusicModel";
     private static final String STATUS_LISTENER = "com.txznet.sdk.TXZMusicManager$MusicToolStatusListener";
 
+    /**
+     * 歌单关键词识别（可接收 title / keywords / ASR 原文任意文本）。
+     * 云端 NLU 对歌单话术有两种下发：title 误带点歌词（v1.8.1 起兜底），
+     * 或放在 model.keywords 数组而 title 为空（如 keywords=["收藏"]，v1.8.11 新增）。
+     * 命中返回 QQMusicController.FOLDER_*，未命中返回 -1 走正常搜索/恢复播放。
+     */
+    public static int matchPlaylist(String text) {
+        if (text == null) {
+            return -1;
+        }
+        String t = text.trim();
+        if (t.isEmpty()) {
+            return -1;
+        }
+        // 排行榜
+        if (t.contains("排行榜") || t.contains("榜单") || t.contains("排行")
+                || t.contains("热歌榜") || t.contains("新歌榜") || t.contains("飙升榜")
+                || t.contains("巅峰榜") || t.contains("音乐榜") || t.contains("流行榜")
+                || (t.length() >= 3 && t.endsWith("榜"))) {
+            return QQMusicController.FOLDER_RANK;
+        }
+        // 每日30首/每日推荐（含 ASR 错字："三零"="30"）
+        if (t.contains("每日30") || t.contains("每日三十") || t.contains("每天30")
+                || t.contains("每天三十") || t.contains("每日推荐") || t.contains("每天推荐")
+                || t.contains("三零") || t.contains("30首")) {
+            return QQMusicController.FOLDER_DAILY_30;
+        }
+        // 猜你喜欢/随便听听/推荐歌曲（个人电台）——先于"我喜欢"规则，避免误吞"猜你喜欢"
+        if (t.contains("猜你喜欢") || t.contains("随便听")
+                || t.contains("好听的") || t.contains("来点歌")
+                || (t.contains("推荐")
+                    && (t.contains("歌") || t.contains("音乐") || t.contains("曲")))) {
+            return QQMusicController.FOLDER_PERSONAL_RADIO;
+        }
+        // 我喜欢/收藏（含 ASR 错字"歌丹"：含"收藏"即命中；
+        // "你喜欢"="我喜欢"的同音误识别；
+        // 以"喜欢"结尾且前面还有内容也视为收藏（实测 ASR 出"china喜欢"）；
+        // 单用"喜欢"（length=2）可能是点歌《喜欢》，不走此规则）
+        if (t.contains("收藏") || t.contains("红心")
+                || t.contains("我喜欢") || t.contains("我的喜欢") || t.contains("你喜欢")
+                || t.contains("喜欢的歌") || t.contains("喜欢的音乐")
+                || (t.length() > 2 && t.endsWith("喜欢"))) {
+            return QQMusicController.FOLDER_FAVOURITE;
+        }
+        return -1;
+    }
+
     /** 创建 MusicTool 接口的动态代理对象 */
     public static Object create(ClassLoader cl, String pkg) throws Throwable {
         Class<?> iface = XposedHelpers.findClass(IFACE, cl);
@@ -179,10 +226,13 @@ public final class QQMusicToolProxy {
                                 // v1.8.1：关键词兜底——TXZ 进程未注入新版模块（或云端 NLU 未拦截）
                                 // 时，"播放我喜欢/收藏的歌单/排行榜"会被云 NLU 误判成点歌 title。
                                 // 车助理进程每次升级都必然重新加载，在此按 title 二次识别并路由歌单。
-                                int folder = matchPlaylistTitle(title);
+                                // v1.8.11：云端还可能只下发 model.keywords（title=null），
+                                // 把 keywords 一并纳入歌单匹配与搜索词。
+                                String raw = modelRawText(pmModel);
+                                int folder = matchPlaylist(raw);
                                 if (folder >= 0) {
-                                    LogManager.i(TAG, "[" + mPkg + "] 关键词兜底路由 -> 歌单 type="
-                                            + folder + "（云NLU误判为点歌，title=" + title + "）");
+                                    LogManager.i(TAG, "[" + mPkg + "] 关键词路由 -> 歌单 type="
+                                            + folder + "（匹配文本=" + raw + "）");
                                     qq().playFolder(folder);
                                 } else {
                                     qq().searchAndPlay(extractQuery(pmModel));
@@ -251,9 +301,71 @@ public final class QQMusicToolProxy {
                 Object artistArr = XposedHelpers.callMethod(model, "getArtist");
                 String artist = (artistArr instanceof String[] && ((String[]) artistArr).length > 0)
                         ? ((String[]) artistArr)[0] : "";
-                return "title=" + title + ", artist=" + artist;
+                String[] keywords = modelKeywords(model);
+                String kw = keywords.length > 0 ? ", keywords=" + joinArr(keywords) : "";
+                return "title=" + title + ", artist=" + artist + kw;
             } catch (Throwable t) {
                 return String.valueOf(model);
+            }
+        }
+
+        /** 反射读取 MusicModel.getKeywords()（String[]，读不到返回空数组） */
+        private static String[] modelKeywords(Object musicModel) {
+            if (musicModel == null) {
+                return new String[0];
+            }
+            try {
+                Object arr = XposedHelpers.callMethod(musicModel, "getKeywords");
+                if (arr instanceof String[]) {
+                    return (String[]) arr;
+                }
+            } catch (Throwable ignored) {
+                // MusicModel 无 getKeywords 的旧版本 SDK 忽略
+            }
+            return new String[0];
+        }
+
+        private static String joinArr(String[] arr) {
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < arr.length; i++) {
+                if (i > 0) sb.append(",");
+                sb.append(arr[i]);
+            }
+            return sb.append("]").toString();
+        }
+
+        /**
+         * v1.8.11：拼接 title + 首个 artist + 全部 keywords，
+         * 供歌单关键词匹配（云端歌单话术可能只落在 keywords）。
+         */
+        private static String modelRawText(Object musicModel) {
+            if (musicModel == null) {
+                return "";
+            }
+            try {
+                StringBuilder sb = new StringBuilder();
+                Object title = XposedHelpers.callMethod(musicModel, "getTitle");
+                if (title != null && !String.valueOf(title).isEmpty()) {
+                    sb.append(title);
+                }
+                Object artistArr = XposedHelpers.callMethod(musicModel, "getArtist");
+                if (artistArr instanceof String[]) {
+                    for (String a : (String[]) artistArr) {
+                        if (a != null && !a.isEmpty()) {
+                            if (sb.length() > 0) sb.append(' ');
+                            sb.append(a);
+                        }
+                    }
+                }
+                for (String kw : modelKeywords(musicModel)) {
+                    if (kw != null && !kw.isEmpty()) {
+                        if (sb.length() > 0) sb.append(' ');
+                        sb.append(kw);
+                    }
+                }
+                return sb.toString();
+            } catch (Throwable t) {
+                return "";
             }
         }
 
@@ -270,52 +382,7 @@ public final class QQMusicToolProxy {
             }
         }
 
-        /**
-         * v1.8.1：歌单关键词兜底识别（只看 title，不看 artist，降低误判）。
-         * 云端 NLU 常把"播放我喜欢/收藏的歌单（ASR 易错字'歌丹'）/排行榜/每日30首"
-         * 误识别为点歌，命中返回 FOLDER_*，未命中返回 -1 走正常搜索。
-         */
-        private static int matchPlaylistTitle(String title) {
-            if (title == null) {
-                return -1;
-            }
-            String t = title.trim();
-            if (t.isEmpty()) {
-                return -1;
-            }
-            // 排行榜
-            if (t.contains("排行榜") || t.contains("榜单") || t.contains("排行")
-                    || t.contains("热歌榜") || t.contains("新歌榜") || t.contains("飙升榜")
-                    || t.contains("巅峰榜") || t.contains("音乐榜") || t.contains("流行榜")) {
-                return QQMusicController.FOLDER_RANK;
-            }
-            // 每日30首/每日推荐（含 ASR 错字："三零"="30"）
-            if (t.contains("每日30") || t.contains("每日三十") || t.contains("每天30")
-                    || t.contains("每天三十") || t.contains("每日推荐") || t.contains("每天推荐")
-                    || t.contains("三零") || t.contains("30首")) {
-                return QQMusicController.FOLDER_DAILY_30;
-            }
-            // 猜你喜欢/随便听听/推荐歌曲（个人电台）——先于"我喜欢"规则，避免误吞"猜你喜欢"
-            if (t.contains("猜你喜欢") || t.contains("随便听")
-                    || t.contains("好听的") || t.contains("来点歌")
-                    || (t.contains("推荐")
-                        && (t.contains("歌") || t.contains("音乐") || t.contains("曲")))) {
-                return QQMusicController.FOLDER_PERSONAL_RADIO;
-            }
-            // 我喜欢/收藏（含 ASR 错字场景：title="收藏的歌丹" 含"收藏"照样命中；
-            // "你喜欢"="我喜欢"的同音/近音误识别；
-            // v1.8.6：title 以"喜欢"结尾且前面还有内容也视为收藏——实测 ASR 把
-            // "播放我喜欢"识别成"china喜欢"，不含"我喜欢"字样但语义就是收藏；
-            // 单用"喜欢"（length=2）可能是点歌《喜欢》，不走此规则）
-            if (t.contains("收藏") || t.contains("我喜欢") || t.contains("你喜欢")
-                    || t.contains("喜欢的歌") || t.contains("喜欢的音乐")
-                    || (t.length() > 2 && t.endsWith("喜欢"))) {
-                return QQMusicController.FOLDER_FAVOURITE;
-            }
-            return -1;
-        }
-
-        /** 从 MusicModel 提取搜索关键词（歌名 + 歌手），供 QQ音乐 scheme 点歌使用 */
+        /** 从 MusicModel 提取搜索关键词（歌名 + 歌手 + keywords），供 QQ音乐 scheme 点歌使用 */
         private static String extractQuery(Object musicModel) {
             if (musicModel == null) {
                 return "";
@@ -332,6 +399,16 @@ public final class QQMusicToolProxy {
                         query.append(' ');
                     }
                     query.append(((String[]) artistArr)[0]);
+                }
+                // v1.8.11：云端可能只把点歌词放在 keywords（title=null），
+                // 如按歌手点播 keywords=["周杰伦"]
+                for (String kw : modelKeywords(musicModel)) {
+                    if (kw != null && !kw.isEmpty()) {
+                        if (query.length() > 0) {
+                            query.append(' ');
+                        }
+                        query.append(kw);
+                    }
                 }
                 // v1.3.3：识别纠错（歌手/歌名同音错字 -> 正确词），防止错词直接进搜索
                 String raw = query.toString();
@@ -410,19 +487,8 @@ public final class QQMusicToolProxy {
                 return;
             }
             try {
-                Object title = XposedHelpers.callMethod(musicModel, "getTitle");
-                Object artistArr = XposedHelpers.callMethod(musicModel, "getArtist");
-                StringBuilder query = new StringBuilder();
-                if (title != null && !String.valueOf(title).isEmpty()) {
-                    query.append(title);
-                }
-                if (artistArr instanceof String[] && ((String[]) artistArr).length > 0) {
-                    if (query.length() > 0) {
-                        query.append(' ');
-                    }
-                    query.append(((String[]) artistArr)[0]);
-                }
-                String q = query.toString();
+                // v1.8.11：与 QQ 广播路径一致，keywords 也纳入搜索词
+                String q = extractQuery(musicModel);
                 LogManager.i(TAG, "[" + mPkg + "] playFromSearch: " + q);
                 MediaController.TransportControls tc = transport();
                 if (tc != null) {
