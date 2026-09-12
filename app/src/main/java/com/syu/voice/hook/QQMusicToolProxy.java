@@ -65,7 +65,10 @@ public final class QQMusicToolProxy {
             return QQMusicController.FOLDER_DAILY_30;
         }
         // 猜你喜欢/随便听听/推荐歌曲（个人电台）——先于"我喜欢"规则，避免误吞"猜你喜欢"
-        if (t.contains("猜你喜欢") || t.contains("随便听")
+        // 含 ASR 同音错字："蔡你喜欢/彩你喜欢/采你喜欢"（260912 日志实测出"蔡你喜欢"，
+        // 若不先命中会被下面的"你喜欢"规则误判成收藏 201）
+        if (t.contains("猜你喜欢") || t.contains("蔡你喜欢") || t.contains("彩你喜欢")
+                || t.contains("采你喜欢") || t.contains("随便听")
                 || t.contains("好听的") || t.contains("来点歌")
                 || (t.contains("推荐")
                     && (t.contains("歌") || t.contains("音乐") || t.contains("曲")))) {

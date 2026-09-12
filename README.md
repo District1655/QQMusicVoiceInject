@@ -18,7 +18,7 @@ GitHub Actions 自动构建并发布 Release，模块内置**在线更新**与**
 > v1.6.2 定位并修复"毛不易播错"真正根因：点歌广播 search_key 的 Base64 未 URL 编码，
 > `+` 被解析为空格导致解码乱码（v1.5.0 语义槽修复因此未生效，voicePlay 收到的已是乱码）。
 
-## 支持列表（v1.8.11）
+## 支持列表（v1.8.12）
 
 | 包名 | 播放器 | 说明 |
 |---|---|---|
@@ -100,18 +100,18 @@ fytMusicVoiceInject/
 ├── .github/workflows/build.yml   # GitHub Actions 自动构建 + Release（仅 app/ 与 workflow 变更触发）
 ├── settings.gradle / build.gradle / gradle.properties
 └── app/
-    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10811
+    ├── build.gradle              # compileOnly xposed-api:82；versionCode 10812
     └── src/main/
         ├── AndroidManifest.xml   # LSPosed 声明（v1.8.8 起 xposedscope 含 7 个目标包，含网易云两包）+ MainActivity
         ├── assets/xposed_init    # 入口类
-        └── java/com/syu/voice/hook/   # v1.8.11
+        └── java/com/syu/voice/hook/   # v1.8.12
             ├── MainHook.java         # Xposed 入口（进程分流；v1.8.6 XposedBridge.log 全链路埋点；v1.8.7 attachBaseContext+initEarly；v1.8.9 改 hook ContextWrapper+白名单注入提前独立容错）
             ├── TXZHook.java          # TXZ 主服务 hook（v1.3.2 命令路由；v1.7.0 NLU 歌单拦截；v1.8.0 哨兵；v1.8.1 文件日志初始化；v1.8.6 LSPosed 日志埋点；v1.8.9 attachBaseContext 改 hook ContextWrapper）
             ├── QQProcessHook.java    # QQ音乐进程 hook（AIDL + 缓存补发；v1.7.0 action=30 歌单；v1.8.0 m0=5/6 放行；v1.8.1 防崩溃 hook + 关闭边听边存；v1.8.6 LSPosed 日志埋点；v1.8.7 pad类名+initEarly；v1.8.9 attachBaseContext 改 hook ContextWrapper）
             ├── ApiHolder.java        # ApiMethodsImpl 实例持有 + voicePlay/控制/playFolderType/getSongList/playSongMid；v1.8.1 收藏 101 自动重试
-            ├── MusicToolInject.java  # 白名单注入（5 个目标包名）；v1.8.11 注册 ScenePlaylistHook
-            ├── ScenePlaylistHook.java# v1.8.11 车助理场景链 VoiceAdapter$17/$18 拦截：ASR 原文+keywords 歌单路由（收藏/我喜欢/猜你喜欢/排行榜/每日30首）
-            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充；v1.8.6 "xxx喜欢"结尾兜底；v1.8.11 读 getKeywords，matchPlaylist 公共规则）
+            ├── MusicToolInject.java  # 白名单注入（5 个目标包名）；v1.8.11 注册 ScenePlaylistHook；v1.8.12 注册后缓存代理实例
+            ├── ScenePlaylistHook.java# v1.8.11 车助理场景链 VoiceAdapter$17/$18 拦截；v1.8.12 重写：代理注册缓存+默认源校验、放行不截断、scene=unknown 接管（ASR 原文+keywords 歌单路由：收藏/我喜欢/猜你喜欢/排行榜/每日30首）
+            ├── QQMusicToolProxy.java # MusicTool 动态代理（转发 + 状态上报；v1.8.0 哨兵路由；v1.8.1 歌单关键词兜底；v1.8.3 ASR 错字扩充；v1.8.6 "xxx喜欢"结尾兜底；v1.8.11 读 getKeywords，matchPlaylist 公共规则；v1.8.12 补"蔡你喜欢"等同音错字→猜你喜欢）
             ├── QQMusicController.java# 控制广播 + 进程拉起（ensureRunning；action=30 歌单 m0=201/104/108/2；v1.8.3 原生 action 兜底）
             ├── LogManager.java       # Logcat + 文件日志（多进程独立目录；v1.8.7 initEarly 无 Context 早期初始化）
             ├── ContextHolder.java    # Application Context 持有（v1.8.10：attachBaseContext 阶段 getApplicationContext() 为 null，回退存 Application 本身）
@@ -172,7 +172,8 @@ $env:JAVA_HOME = "<JDK17路径>"
 
 | 版本 | 内容 |
 |---|---|
-| v1.8.11 | **修复歌单类指令混淆（"播放我收藏的歌"无法识别）**：云端 NLU 把歌单意图放在 `model.keywords` 数组（title 为空，实测"播放收藏的歌吧"→keywords=["收藏"]），代理只读 title/artist 导致意图丢失只恢复播放；且 v1.7.0 的 NLU 拦截 hook 在 TXZ 进程，本机音乐域 NLU 实际在车助理进程场景链内，零命中。①QQMusicToolProxy 反射读 getKeywords()，歌单匹配改用 title+artist+keywords 组合文本（规则抽成公共 matchPlaylist，补"红心/我的喜欢/xx榜"尾缀），extractQuery 纳入 keywords（歌手点播同理）；②新增 ScenePlaylistHook 在车助理进程 hook VoiceAdapter$17/$18.process，按 ASR 原文+keywords 直接路由本模块 MusicTool（playFavourMusic/playRandom/哨兵），setResult(true) 截断场景链，内置播放器代理校验放行，$17/$18 2.5s 去重（当前版本） |
+| v1.8.12 | **修复 v1.8.11 歌单指令全部无效（当前版本）**：185123 日志实锤三 bug——①代理识别永远失败：TXZ 2.9.8 SDK 中 MusicTool 存于 `private Object i`（声明类型 Object 非 MusicTool 接口），按字段声明类型匹配必返回 null，全部误判"非本模块代理"；②去重截断吞链路：放行分支也写去重键，$17 放行后 $18 被无条件 setResult(true)，拦截没派发、云端 IPC 原链路也被截断，两头落空；③"播放我喜欢的歌"被云端判 scene=unknown/action=unknown，非 music 域旧过滤器直接漏过。重写 ScenePlaylistHook：注册代理时直接缓存实例+按 VoiceConfigManager.getDefMusic()/SP 校验当前默认源（字段值 Proxy+Handler 判定兜底）；去重键仅在派发成功后写；非 music 域按 ASR 原文命中歌单也接管；matchPlaylist 补"蔡你喜欢/彩你喜欢/采你喜欢"同音错字→猜你喜欢(104) |
+| v1.8.11 | **修复歌单类指令混淆（"播放我收藏的歌"无法识别）**：云端 NLU 把歌单意图放在 `model.keywords` 数组（title 为空，实测"播放收藏的歌吧"→keywords=["收藏"]），代理只读 title/artist 导致意图丢失只恢复播放；且 v1.7.0 的 NLU 拦截 hook 在 TXZ 进程，本机音乐域 NLU 实际在车助理进程场景链内，零命中。①QQMusicToolProxy 反射读 getKeywords()，歌单匹配改用 title+artist+keywords 组合文本（规则抽成公共 matchPlaylist，补"红心/我的喜欢/xx榜"尾缀），extractQuery 纳入 keywords（歌手点播同理）；②新增 ScenePlaylistHook 在车助理进程 hook VoiceAdapter$17/$18.process，按 ASR 原文+keywords 直接路由本模块 MusicTool（playFavourMusic/playRandom/哨兵），setResult(true) 截断场景链，内置播放器代理校验放行，$17/$18 2.5s 去重 |
 | v1.8.10 | **修复 v1.8.9 音乐源恢复后点歌/控制全部失效的回归**：attachBaseContext 回调执行时 `LoadedApk.mApplication` 尚未赋值，`app.getApplicationContext()` 返回 null，ContextHolder（只写一次）被 null 永久占位，onCreate 回调又被防重标志跳过 → 车助理代理 `qq()` 返回 null → 点歌全降级到 QQ音乐HD 不支持的 MediaSession playFromSearch（日志"获取 MediaSession 失败"）。ContextHolder.set 改为 applicationContext 为 null 时回退存 Application 本身（mBase 已绑定，可正常发广播）；恢复 action=8 点歌/controlPlay/playFolder 全通道 |
 | v1.8.9 | **修复 v1.8.7 起车助理设置选不到 QQ音乐/网易云等音乐源的回归**：①`attachBaseContext(Context)` 实际声明在父类 `android.content.ContextWrapper` 上、Application 自身未声明，v1.8.7 hook "android.app.Application" 在 Android10/LSPosed1.9.2 抛 NoSuchMethodError#exact——车助理分支该注册无独立 try/catch，异常中止整个 handleLoadPackage，MusicToolInject 白名单注入完全没执行；三入口（MainHook/TXZHook/QQProcessHook）统一改 hook ContextWrapper + 回调 instanceof Application 过滤；②车助理分支 MusicToolInject.hook 提前到生命周期 hook 之前并独立 try/catch，外层 catch 不再 rethrow |
 | v1.8.8 | 工程治理：①manifest xposedscope 补齐网易云两包（文档记 v1.4.1 已加但实际从未包含，LSPosed 管理器无法勾选；此前靠一键勾选写 DB 绕过）；②MainActivity 1540 行拆成 UI + ScopeConfig/RootShell/LogCollector/LsposedScopeManager/AppControl 五个职责类（行为不变，删两处死代码）；③cert.txt 换成真实签名信息；④SDK 迁到 D:\android-sdk |

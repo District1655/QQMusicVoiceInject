@@ -119,6 +119,9 @@ public final class MusicToolInject {
                                         XposedHelpers.findClass(MUSIC_MANAGER, cl), "getInstance");
                                 Object proxy = QQMusicToolProxy.create(cl, pkg);
                                 XposedHelpers.callMethod(manager, "setMusicTool", proxy);
+                                // v1.8.12：缓存代理实例，ScenePlaylistHook 直接据此派发，
+                                // 不再依赖混淆字段（SDK 2.9.8 中字段为 Object i，按类型找不到）
+                                ScenePlaylistHook.registerTool(pkg, proxy);
                                 LogManager.i(TAG, "已为 " + pkg + " 注册 MediaSession 音乐工具");
                             } catch (Throwable t) {
                                 LogManager.e(TAG, "注册音乐工具失败: " + pkg, t);
